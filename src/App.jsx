@@ -1746,8 +1746,8 @@ function buildBoxHTML(product, data) {
   const innerBox = buildBoxOnly(data).split("\n").map(l => "            " + l).join("\n");
 
   const figure = product.imageUrl
-    ? `            <figure class="image" style="height:auto;">
-                <a href="${escapeHtml(product.url)}"><img style="display:block;max-width:400px;" src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}" width="400"></a>
+    ? `            <figure class="image" style="height:auto;max-width:400px;">
+                <a href="${escapeHtml(product.url)}"><img style="display:block;width:400px;height:auto;max-width:100%;" src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}" width="400"></a>
             </figure>
 `
     : "";
