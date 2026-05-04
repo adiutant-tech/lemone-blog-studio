@@ -1402,22 +1402,38 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems) {
     }
   }
 
-  // 4. Wymusza stały rozmiar 400px na obrazkach produktów. CMS sklepu wstawia <img> bez inline
-  // style, przez co CSS strony może je rozciągać na pełną szerokość kontenera. To dotyczy obrazków
-  // które są dziećmi <a> linkującego do produktu (/p-XXX.html). Dorzucamy style do istniejących,
-  // nie nadpisujemy, żeby nie kasować innych ustawień (np. border-radius).
-  const productImages = doc.querySelectorAll("a img");
-  for (const img of productImages) {
-    const link = img.closest("a");
+  // 4. TRANSFORMACJA struktury obrazków: <p><a><strong>?<img></strong>?</a></p> → <figure class="image"><a><img></a></figure>
+  // To wzorzec który działa na sklep.lemone.pl (potwierdzone na produkcyjnym artykule z Dermaquest).
+  // CSS sklepu rozciąga <img> w <p> na 100% szerokości, ale honoruje max-width:400px na <img> w <figure class="image">.
+  // Walka z CSS przez !important nie działa — różnica jest w opakowaniu, nie w stylu.
+  const allParas = Array.from(doc.querySelectorAll("p"));
+  for (const p of allParas) {
+    const link = p.querySelector("a");
     if (!link) continue;
     const href = link.getAttribute("href") || "";
     if (!PRODUCT_URL_RE.test(href)) continue;
+    const img = link.querySelector("img");
+    if (!img) continue;
+    // Tylko jeśli paragraf zawiera WYŁĄCZNIE obrazek (i ewentualnie whitespace)
+    if (p.textContent.replace(/\s+/g, "") !== "") continue;
 
-    const existingStyle = (img.getAttribute("style") || "").trim();
-    // Skip jeśli już ma width:400 — nie duplikuj
-    if (/width\s*:\s*400/i.test(existingStyle)) continue;
-    const sep = existingStyle && !existingStyle.endsWith(";") ? ";" : "";
-    img.setAttribute("style", existingStyle + sep + "display:block;width:400px;height:auto;max-width:100%;");
+    // Buduj <figure class="image" style="height:auto;"><a href="..."><img style="..." src="..." alt="..." width="400"></a></figure>
+    const figure = doc.createElement("figure");
+    figure.setAttribute("class", "image");
+    figure.setAttribute("style", "height:auto;");
+
+    const newA = doc.createElement("a");
+    newA.setAttribute("href", href);
+
+    const newImg = doc.createElement("img");
+    newImg.setAttribute("src", img.getAttribute("src") || "");
+    if (img.getAttribute("alt")) newImg.setAttribute("alt", img.getAttribute("alt"));
+    newImg.setAttribute("width", "400");
+    newImg.setAttribute("style", "display:block;max-width:400px;");
+
+    newA.appendChild(newImg);
+    figure.appendChild(newA);
+    p.replaceWith(figure);
   }
 
   // 5. Wyczyść WSZYSTKIE istniejące żółte boxy z poprzednich generacji.
@@ -1854,8 +1870,8 @@ function buildBoxHTML(product, data) {
   const innerBox = buildBoxOnly(data).split("\n").map(l => "            " + l).join("\n");
 
   const figure = product.imageUrl
-    ? `            <figure class="image" style="height:auto;max-width:400px;">
-                <a href="${escapeHtml(product.url)}"><img style="display:block;width:400px;height:auto;max-width:100%;" src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}" width="400"></a>
+    ? `            <figure class="image" style="height:auto;">
+                <a href="${escapeHtml(product.url)}"><img style="display:block;max-width:400px;" src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}" width="400"></a>
             </figure>
 `
     : "";
@@ -1898,9 +1914,11 @@ export default function App() {
     setStep("results");
 
     setProgress({ current: 0, total: found.length });
+    const generatedBoxes = {};
     for (let i = 0; i < found.length; i++) {
       setProgress({ current: i + 1, total: found.length });
-      await runOne(found[i]);
+      const result = await runOne(found[i]);
+      if (result?.status === "ready") generatedBoxes[found[i].url] = result;
       // Gap między boxami — rozkłada calls w czasie żeby nie kumulować rate limitu po stronie Workera/Anthropic.
       // Dla 4 produktów dodaje ~6s, ale dramatycznie zmniejsza szansę padu po 3-4 boxach.
       if (i < found.length - 1) {
@@ -1908,6 +1926,80 @@ export default function App() {
       }
     }
     setProgress(null);
+
+    // Po wygenerowaniu wszystkich boxów: walidacja `related` przeciwko żywym URL-om sklepu.
+    // CATEGORIES ma 1149 wpisów z auto-derywowanymi slugami, ale shop może mieć inne dla części
+    // kategorii. /check-link w Workerze robi HEAD do sklep.lemone.pl<slug> i mówi czy URL działa.
+    // Te które nie działają, usuwamy z `related` i regenerujemy HTML boxa.
+    if (Object.keys(generatedBoxes).length > 0) {
+      await validateRelatedSlugs(found, generatedBoxes);
+    }
+  };
+
+  // Sprawdza wszystkie unikalne slugi `related` we wszystkich boxach naraz (1 request HTTP).
+  // Te które wracają !ok, są usuwane z odpowiednich boxów. HTML każdego dotkniętego boxa jest regenerowany.
+  // Jeśli /check-link nie istnieje (Worker bez endpointu), pokazujemy globalny warning ale nie crashujemy.
+  const validateRelatedSlugs = async (productList, currentBoxes) => {
+    const allSlugs = new Set();
+    for (const p of productList) {
+      const box = currentBoxes[p.url];
+      if (box?.status === "ready" && Array.isArray(box.related)) {
+        for (const r of box.related) {
+          if (r?.slug) allSlugs.add(r.slug);
+        }
+      }
+    }
+    if (allSlugs.size === 0) return;
+
+    let liveStatuses;
+    try {
+      liveStatuses = await checkLinksLive([...allSlugs]);
+    } catch (e) {
+      // Worker bez /check-link albo inny problem sieciowy — graceful: dorzuć warning do każdego boxa,
+      // ale nie modyfikuj related. Robert zobaczy ostrzeżenie i będzie wiedział że trzeba wdrożyć Worker.
+      const reason = e.message || String(e);
+      setBoxes(prev => {
+        const next = { ...prev };
+        for (const url in next) {
+          const b = next[url];
+          if (b.status === "ready") {
+            next[url] = { ...b, warnings: [...(b.warnings || []), `Walidacja slugów niedostępna (${reason}). Wdróż endpoint /check-link w Workerze (worker-check-link.js).`] };
+          }
+        }
+        return next;
+      });
+      return;
+    }
+
+    // Zaaplikuj wyniki: filtruj related, regeneruj html, dorzuć warning gdy coś usunięte.
+    setBoxes(prev => {
+      const next = { ...prev };
+      for (const product of productList) {
+        const box = next[product.url];
+        if (!box || box.status !== "ready" || !Array.isArray(box.related)) continue;
+
+        const dead = box.related.filter(r => {
+          const live = liveStatuses[r.slug];
+          return live && !live.ok && !live.error;
+        });
+        if (dead.length === 0) continue;
+
+        const alive = box.related.filter(r => !dead.includes(r));
+        const newHtml = buildBoxHTML(product, {
+          forWho: box.forWho,
+          whyWorth: box.whyWorth,
+          related: alive
+        });
+        const deadList = dead.map(r => r.slug).join(", ");
+        next[product.url] = {
+          ...box,
+          related: alive,
+          html: newHtml,
+          warnings: [...(box.warnings || []), `Usunięto ${dead.length} martwy(ch) slug(ów) (404 na sklepie): ${deadList}`]
+        };
+      }
+      return next;
+    });
   };
 
   const runOne = async (product) => {
@@ -1915,9 +2007,13 @@ export default function App() {
     try {
       const data = await generateBoxData(product);
       const html = buildBoxHTML(product, data);
-      setBoxes(prev => ({ ...prev, [product.url]: { status: "ready", ...data, html } }));
+      const boxState = { status: "ready", ...data, html };
+      setBoxes(prev => ({ ...prev, [product.url]: boxState }));
+      return boxState;
     } catch (e) {
-      setBoxes(prev => ({ ...prev, [product.url]: { status: "error", error: e.message || String(e) } }));
+      const errState = { status: "error", error: e.message || String(e) };
+      setBoxes(prev => ({ ...prev, [product.url]: errState }));
+      return errState;
     }
   };
 
@@ -1955,7 +2051,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v1.4 · stałe 400px obrazków produktów
+                v1.6 · transformacja img na figure (zgodnie z działającym wzorcem)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
