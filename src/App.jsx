@@ -1633,7 +1633,12 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
   });
 
   if (!response.ok) {
-    throw new Error(`Classifier API ${response.status}: ${response.statusText}`);
+    let detail = response.statusText;
+    try {
+      const body = await response.text();
+      if (body) detail = body.slice(0, 300);
+    } catch (_) {}
+    throw new Error(`Classifier API ${response.status}: ${detail}`);
   }
 
   const data = await response.json();
@@ -1708,10 +1713,15 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
   });
 
   if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.text();
+      if (body) detail = body.slice(0, 300);
+    } catch (_) {}
     if (response.status === 429) {
-      throw new Error(`Limit Anthropic (429) — pomimo 3 prób. Odczekaj chwilę i kliknij „Spróbuj ponownie".`);
+      throw new Error(`Limit (429) — pomimo 3 prób. ${detail}`);
     }
-    throw new Error(`API ${response.status}: ${response.statusText}`);
+    throw new Error(`API ${response.status}: ${detail}`);
   }
 
   const data = await response.json();
