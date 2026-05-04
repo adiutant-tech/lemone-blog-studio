@@ -1402,7 +1402,25 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems) {
     }
   }
 
-  // 3. Wyczyść WSZYSTKIE istniejące żółte boxy z poprzednich generacji.
+  // 4. Wymusza stały rozmiar 400px na obrazkach produktów. CMS sklepu wstawia <img> bez inline
+  // style, przez co CSS strony może je rozciągać na pełną szerokość kontenera. To dotyczy obrazków
+  // które są dziećmi <a> linkującego do produktu (/p-XXX.html). Dorzucamy style do istniejących,
+  // nie nadpisujemy, żeby nie kasować innych ustawień (np. border-radius).
+  const productImages = doc.querySelectorAll("a img");
+  for (const img of productImages) {
+    const link = img.closest("a");
+    if (!link) continue;
+    const href = link.getAttribute("href") || "";
+    if (!PRODUCT_URL_RE.test(href)) continue;
+
+    const existingStyle = (img.getAttribute("style") || "").trim();
+    // Skip jeśli już ma width:400 — nie duplikuj
+    if (/width\s*:\s*400/i.test(existingStyle)) continue;
+    const sep = existingStyle && !existingStyle.endsWith(";") ? ";" : "";
+    img.setAttribute("style", existingStyle + sep + "display:block;width:400px;height:auto;max-width:100%;");
+  }
+
+  // 5. Wyczyść WSZYSTKIE istniejące żółte boxy z poprzednich generacji.
   // Robimy to najpierw, niezależnie od `wrapper` — wcześniejsza logika zostawiała stare boxy
   // gdy struktura była zagnieżdżona i `closest("div.product")` zwracał innego "rodzica".
   const oldBoxes = Array.from(doc.querySelectorAll("div[style]")).filter(el =>
@@ -1410,7 +1428,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems) {
   );
   for (const oldBox of oldBoxes) oldBox.remove();
 
-  // 4. Dla każdego produktu — znajdź najlepszy "anchor" do wstawienia boxa.
+  // 6. Dla każdego produktu — znajdź najlepszy "anchor" do wstawienia boxa.
   // Priorytet: <p> z <img> linku produktu → <figure> linku produktu → <p> z linkiem tytułowym → fallback.
   // Działa zarówno dla zagnieżdżonej struktury Roberta (img w <p><a>...</a></p>)
   // jak i dla klasycznych artykułów z <figure class="image">.
@@ -1937,7 +1955,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v1.3 · TOC links + boxy pod zdjęciem
+                v1.4 · stałe 400px obrazków produktów
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
