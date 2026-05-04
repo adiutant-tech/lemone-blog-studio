@@ -1556,6 +1556,35 @@ function highlightBrokenLinks(html, links, liveStatuses) {
   return doc.body.innerHTML;
 }
 
+// === RATE-LIMIT-AWARE FETCH ===
+// Anthropic API zwraca 429 przy przekroczeniu RPM/TPM (typowo TPM przy dużych promptach).
+// Worker proxy może też zwrócić 502/503 przy chwilowych problemach. Retry z exp backoff,
+// honoruje header Retry-After jeśli jest podany przez serwer.
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  let lastResponse;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      lastResponse = await fetch(url, options);
+    } catch (e) {
+      // Network error — retry too, ale tylko raz (mogło być Failed to fetch / DNS hiccup)
+      if (attempt === maxRetries) throw e;
+      await new Promise(r => setTimeout(r, 1500 * Math.pow(2, attempt)));
+      continue;
+    }
+
+    const retryable = lastResponse.status === 429 || lastResponse.status === 502 || lastResponse.status === 503;
+    if (!retryable) return lastResponse;
+    if (attempt === maxRetries) return lastResponse;
+
+    // Server-provided Retry-After ma pierwszeństwo (Anthropic czasem podaje sekundy do resetu TPM).
+    const retryAfter = lastResponse.headers.get("retry-after");
+    const serverWaitMs = retryAfter ? Math.min(parseFloat(retryAfter) * 1000, 30000) : null;
+    const backoffMs = serverWaitMs ?? Math.min(1500 * Math.pow(2, attempt), 12000);
+    await new Promise(r => setTimeout(r, backoffMs));
+  }
+  return lastResponse;
+}
+
 // === ANTHROPIC API CALL — CLASSIFIER (multi-label, picks 1-4 containers per product) ===
 // Runs before generateBoxData. Output drives which categories enter the box-generation prompt,
 // cutting input tokens 2-10× depending on product type.
@@ -1593,7 +1622,7 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
 {"containers":["..."]}`;
 
   const apiUrl = import.meta.env.VITE_API_URL || "https://api.anthropic.com/v1/messages";
-  const response = await fetch(apiUrl, {
+  const response = await fetchWithRetry(apiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1668,7 +1697,7 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
 {"forWho":["...","...","..."],"whyWorth":["...","...","..."],"related":[{"slug":"/...","label":"..."},{"slug":"/...","label":"..."},{"slug":"/...","label":"..."}]}`;
 
   const apiUrl = import.meta.env.VITE_API_URL || "https://api.anthropic.com/v1/messages";
-  const response = await fetch(apiUrl, {
+  const response = await fetchWithRetry(apiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1679,6 +1708,9 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
   });
 
   if (!response.ok) {
+    if (response.status === 429) {
+      throw new Error(`Limit Anthropic (429) — pomimo 3 prób. Odczekaj chwilę i kliknij „Spróbuj ponownie".`);
+    }
     throw new Error(`API ${response.status}: ${response.statusText}`);
   }
 
@@ -1793,6 +1825,12 @@ export default function App() {
     for (let i = 0; i < found.length; i++) {
       setProgress({ current: i + 1, total: found.length });
       await runOne(found[i]);
+      // Drobny gap między boxami — rozkłada calls w czasie żeby nie kumulować TPM Anthropic.
+      // Dla 1 produktu nieistotny, dla 8 produktów daje ~5s wydłużenia ale dramatycznie zmniejsza
+      // szansę 429. Można usunąć gdy Worker proxy obsługuje rate limiting po swojej stronie.
+      if (i < found.length - 1) {
+        await new Promise(r => setTimeout(r, 600));
+      }
     }
     setProgress(null);
   };
