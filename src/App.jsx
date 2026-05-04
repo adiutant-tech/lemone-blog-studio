@@ -1367,7 +1367,18 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems) {
     }
   }
 
-  // 3. Splice product boxes (replace existing colored box or insert after image)
+  // 3. Wyczyść WSZYSTKIE istniejące żółte boxy z poprzednich generacji.
+  // Robimy to najpierw, niezależnie od `wrapper` — wcześniejsza logika zostawiała stare boxy
+  // gdy struktura była zagnieżdżona i `closest("div.product")` zwracał innego "rodzica".
+  const oldBoxes = Array.from(doc.querySelectorAll("div[style]")).filter(el =>
+    /background-color:\s*#fff8e6/i.test(el.getAttribute("style") || "")
+  );
+  for (const oldBox of oldBoxes) oldBox.remove();
+
+  // 4. Dla każdego produktu — znajdź najlepszy "anchor" do wstawienia boxa.
+  // Priorytet: <p> z <img> linku produktu → <figure> linku produktu → <p> z linkiem tytułowym → fallback.
+  // Działa zarówno dla zagnieżdżonej struktury Roberta (img w <p><a>...</a></p>)
+  // jak i dla klasycznych artykułów z <figure class="image">.
   for (const product of products) {
     const box = boxes[product.url];
     if (!box || box.status !== "ready") continue;
@@ -1377,47 +1388,47 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems) {
       whyWorth: box.whyWorth,
       related: box.related
     });
-
-    const productLinks = Array.from(doc.querySelectorAll(`a[href="${CSS.escape(product.url)}"]`));
-    if (productLinks.length === 0) continue;
-
-    const wrapper = productLinks[0].closest("div.product");
-    if (!wrapper) continue;
-
-    const col = wrapper.querySelector(".col-12") || wrapper;
-
-    // Locate existing colored box that belongs to THIS product (not nested)
-    let existingBox = null;
-    const candidates = Array.from(col.querySelectorAll("div"));
-    for (const c of candidates) {
-      const style = c.getAttribute("style") || "";
-      if (/background-color:\s*#fff8e6/i.test(style)) {
-        // Confirm this box's nearest .product wrapper is our wrapper (not a nested one)
-        const nearestProduct = c.closest("div.product");
-        if (nearestProduct === wrapper) {
-          existingBox = c;
-          break;
-        }
-      }
-    }
-
     const tmp = doc.createElement("div");
     tmp.innerHTML = newBoxHtml;
     const newBox = tmp.firstElementChild;
     if (!newBox) continue;
 
-    if (existingBox) {
-      existingBox.replaceWith(newBox);
-    } else {
-      // Fallback: insert after the figure (product image)
-      const figure = wrapper.querySelector("figure");
-      if (figure && figure.parentNode === col) {
-        figure.after(newBox);
-      } else if (figure) {
-        figure.after(newBox);
-      } else {
-        col.appendChild(newBox);
+    // Wszystkie linki do tego konkretnego produktu w całym dokumencie.
+    // (Inne produkty mają inne URL-e, więc to nie złapie zagnieżdżonych.)
+    const productLinks = Array.from(doc.querySelectorAll(`a[href="${CSS.escape(product.url)}"]`));
+    if (productLinks.length === 0) continue;
+
+    let anchor = null; // element po którym wstawimy box
+
+    // Priorytet 1: <p> zawierający <a><img>...</a></p> dla tego produktu
+    for (const link of productLinks) {
+      if (link.querySelector("img")) {
+        anchor = link.closest("p") || link.closest("figure") || link.parentElement;
+        if (anchor) break;
       }
+    }
+
+    // Priorytet 2: <figure> zawierający link do tego produktu (stary format z <figure class="image">)
+    if (!anchor) {
+      for (const link of productLinks) {
+        const fig = link.closest("figure");
+        if (fig) { anchor = fig; break; }
+      }
+    }
+
+    // Priorytet 3: <p> zawierający link do tego produktu (paragraf tytułowy z nazwą)
+    if (!anchor) {
+      for (const link of productLinks) {
+        const p = link.closest("p");
+        if (p) { anchor = p; break; }
+      }
+    }
+
+    // Wstaw box po anchorze. Jeśli żaden nie znaleziony — last resort: po pierwszym linku produktu.
+    if (anchor) {
+      anchor.after(newBox);
+    } else {
+      productLinks[0].after(newBox);
     }
   }
 
@@ -1560,7 +1571,7 @@ function highlightBrokenLinks(html, links, liveStatuses) {
 // Anthropic API zwraca 429 przy przekroczeniu RPM/TPM (typowo TPM przy dużych promptach).
 // Worker proxy może też zwrócić 502/503 przy chwilowych problemach. Retry z exp backoff,
 // honoruje header Retry-After jeśli jest podany przez serwer.
-async function fetchWithRetry(url, options, maxRetries = 3) {
+async function fetchWithRetry(url, options, maxRetries = 5) {
   let lastResponse;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -1568,7 +1579,7 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
     } catch (e) {
       // Network error — retry too, ale tylko raz (mogło być Failed to fetch / DNS hiccup)
       if (attempt === maxRetries) throw e;
-      await new Promise(r => setTimeout(r, 1500 * Math.pow(2, attempt)));
+      await new Promise(r => setTimeout(r, 3000 * Math.pow(2, attempt)));
       continue;
     }
 
@@ -1579,7 +1590,7 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
     // Server-provided Retry-After ma pierwszeństwo (Anthropic czasem podaje sekundy do resetu TPM).
     const retryAfter = lastResponse.headers.get("retry-after");
     const serverWaitMs = retryAfter ? Math.min(parseFloat(retryAfter) * 1000, 30000) : null;
-    const backoffMs = serverWaitMs ?? Math.min(1500 * Math.pow(2, attempt), 12000);
+    const backoffMs = serverWaitMs ?? Math.min(3000 * Math.pow(2, attempt), 30000);
     await new Promise(r => setTimeout(r, backoffMs));
   }
   return lastResponse;
@@ -1626,7 +1637,9 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      // Haiku ma osobny pool TPM od Sonneta — classifier nie zjada budżetu generatorowi boxa.
+      // Multi-label classification to dla Haiku 4.5 trywialne zadanie, jakość zostaje, koszt 5× niższy.
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 200,
       messages: [{ role: "user", content: prompt }]
     })
@@ -1835,11 +1848,10 @@ export default function App() {
     for (let i = 0; i < found.length; i++) {
       setProgress({ current: i + 1, total: found.length });
       await runOne(found[i]);
-      // Drobny gap między boxami — rozkłada calls w czasie żeby nie kumulować TPM Anthropic.
-      // Dla 1 produktu nieistotny, dla 8 produktów daje ~5s wydłużenia ale dramatycznie zmniejsza
-      // szansę 429. Można usunąć gdy Worker proxy obsługuje rate limiting po swojej stronie.
+      // Gap między boxami — rozkłada calls w czasie żeby nie kumulować rate limitu po stronie Workera/Anthropic.
+      // Dla 4 produktów dodaje ~6s, ale dramatycznie zmniejsza szansę padu po 3-4 boxach.
       if (i < found.length - 1) {
-        await new Promise(r => setTimeout(r, 600));
+        await new Promise(r => setTimeout(r, 2000));
       }
     }
     setProgress(null);
