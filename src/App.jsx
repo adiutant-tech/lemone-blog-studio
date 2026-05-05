@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Copy, Check, FileText, Sparkles, AlertCircle, Loader2, RefreshCw, ChevronDown, ChevronRight, Package, Zap, Download, Plus, X } from "lucide-react";
 
 // === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) — REVERTED z 1149 do oryginału ===
@@ -396,7 +396,7 @@ function buildFaqHTML(items) {
   const schemaScript = `<script type="application/ld+json">${JSON.stringify(schema)}</script>`;
 
   return `<div style="margin:40px 0 30px;">
-    <h2 style="font-size:22px;color:#2d4a2d;margin-bottom:18px;">Najczęściej zadawane pytania</h2>
+    <h2 style="font-size:22px;color:#2d4a2d;margin-bottom:18px;">Q&amp;A - często zadawane pytania</h2>
 ${cards}
 ${schemaScript}
 </div>`;
@@ -550,10 +550,12 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
 
   // 7. Wstaw sekcję FAQ na samym dole artykułu (po Podsumowaniu, jako ostatni element treści).
   // Jeśli artykuł miał już sekcję FAQ z poprzedniej generacji, wykasuj ją żeby nie duplikować.
-  // Wykrywanie starej: nasz schemat ma h2 "Najczęściej zadawane pytania" + zielone karty.
-  const oldFaqHeadings = Array.from(doc.querySelectorAll("h2")).filter(h =>
-    /najczęściej zadawane pytania/i.test(h.textContent || "")
-  );
+  // Wykrywanie starej: dopasowuje OBA warianty nazwy używane przez Studio kiedykolwiek
+  // ("Najczęściej zadawane pytania" v1.8, "Q&A - często zadawane pytania" v1.9+).
+  const oldFaqHeadings = Array.from(doc.querySelectorAll("h2")).filter(h => {
+    const t = (h.textContent || "").toLowerCase();
+    return /najczęściej zadawane pytania/.test(t) || /q&a.*często zadawane pytania/.test(t);
+  });
   for (const h of oldFaqHeadings) {
     // Usuń wszystko od tego h2 do końca rodzica (ten h2 + następujące rodzeństwo do końca)
     const parent = h.parentElement;
@@ -1236,7 +1238,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v1.8 · generator FAQ + edycja inline + JSON-LD schema
+                v1.9 · edycja Pełnego artykułu inline + Q&amp;A heading
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1416,17 +1418,6 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
           </p>
         </div>
         <div style={{ flex: 1 }} />
-        {allReady && (
-          <>
-            <button onClick={() => copyText(fullArticleHtml, setCopiedFull)} style={{ ...btnPrimary, background: copiedFull ? "#5b8c5a" : "#2d4a2d" }}>
-              {copiedFull ? <Check size={15} /> : <Copy size={15} />}
-              {copiedFull ? "Skopiowano!" : "Kopiuj cały artykuł"}
-            </button>
-            <button onClick={downloadFullArticle} style={btnSecondary}>
-              <Download size={14} /> Pobierz .html
-            </button>
-          </>
-        )}
       </div>
 
       {progress && (
@@ -1457,7 +1448,7 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
       </div>
 
       <SectionHeader
-        title="FAQ — Najczęściej zadawane pytania"
+        title="Q&A - często zadawane pytania"
         subtitle="6 pytań i odpowiedzi wygenerowanych dla artykułu — możesz edytować przed kopiowaniem. Wstawiane na końcu artykułu + FAQPage schema dla SEO."
         extraTop={28}
       />
@@ -1744,8 +1735,23 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState(null);
 
-  // Extract all relative non-product links once per article
-  const links = useMemo(() => extractArticleLinks(html), [html]);
+  // Edycja inline kodu artykułu. `editedHtml` to override — gdy null, używamy props.html (auto-wygenerowany).
+  // Gdy user edytuje w textarea, ustawiamy editedHtml na to co napisał. Wszystko poniżej (preview, linki,
+  // kopiowanie, pobieranie) konsumuje `displayHtml`, więc zmiany kaskadują automatycznie.
+  const [editedHtml, setEditedHtml] = useState(null);
+  const [copiedDisplay, setCopiedDisplay] = useState(false);
+
+  // Gdy parent zregeneruje (zmieni props.html — np. po regeneracji boxa albo edycji TOC/FAQ),
+  // resetujemy edycje, żeby nie utknąć na przestarzałej edytowanej wersji.
+  useEffect(() => {
+    setEditedHtml(null);
+  }, [html]);
+
+  const displayHtml = editedHtml !== null ? editedHtml : html;
+  const isEdited = editedHtml !== null && editedHtml !== html;
+
+  // Extract all relative non-product links once per article (z aktualnej, ewentualnie edytowanej treści)
+  const links = useMemo(() => extractArticleLinks(displayHtml), [displayHtml]);
 
   // Counts for tab badge
   const localMissingCount = useMemo(() => links.filter(l => l.localStatus === "local-missing").length, [links]);
@@ -1755,10 +1761,10 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
   );
   const totalIssues = localMissingCount + liveBrokenCount;
 
-  // Highlighted preview HTML — recomputed when statuses change
+  // Highlighted preview HTML — recomputed when statuses or edits change
   const previewHtml = useMemo(
-    () => highlightBrokenLinks(html, links, liveStatuses),
-    [html, links, liveStatuses]
+    () => highlightBrokenLinks(displayHtml, links, liveStatuses),
+    [displayHtml, links, liveStatuses]
   );
 
   const runLiveCheck = async () => {
@@ -1766,7 +1772,6 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
     setChecking(true);
     setCheckError(null);
     try {
-      // Only check links that exist locally — skip local-missing (URL would 404 anyway, no point hammering shop)
       const candidates = links.filter(l => l.localStatus === "local-ok").map(l => l.url);
       if (candidates.length === 0) {
         setLiveStatuses({});
@@ -1781,18 +1786,42 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
     }
   };
 
-  const copyJustBoxes = async () => {
+  // Generic clipboard helper — używamy go dla wszystkich kopiowań w karcie
+  const copyToClipboard = async (text, setFlag) => {
     try {
-      await navigator.clipboard.writeText(boxesHtml);
-      setCopiedBoxes(true);
-      setTimeout(() => setCopiedBoxes(false), 1500);
+      await navigator.clipboard.writeText(text);
+      setFlag(true);
+      setTimeout(() => setFlag(false), 1500);
     } catch (e) {
       const ta = document.createElement("textarea");
-      ta.value = boxesHtml;
+      ta.value = text;
       document.body.appendChild(ta);
       ta.select();
-      try { document.execCommand("copy"); setCopiedBoxes(true); setTimeout(() => setCopiedBoxes(false), 1500); } catch (_) {}
+      try { document.execCommand("copy"); setFlag(true); setTimeout(() => setFlag(false), 1500); } catch (_) {}
       document.body.removeChild(ta);
+    }
+  };
+
+  const copyJustBoxes = () => copyToClipboard(boxesHtml, setCopiedBoxes);
+  const copyDisplay = () => copyToClipboard(displayHtml, setCopiedDisplay);
+
+  // Pobieranie też ma używać displayHtml — jeśli user edytował, pobiera edycje, nie auto-wersję
+  const downloadDisplay = () => {
+    const blob = new Blob([displayHtml], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `artykul-${new Date().toISOString().slice(0, 10)}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const resetEdits = () => {
+    if (!isEdited) return;
+    if (window.confirm("Cofnąć wszystkie ręczne edycje i wrócić do wersji wygenerowanej automatycznie?")) {
+      setEditedHtml(null);
     }
   };
 
@@ -1832,10 +1861,18 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
 
   return (
     <div style={{ background: "#fff", border: "1px solid #e8e4dc", borderRadius: 12, overflow: "hidden" }}>
-      <div style={{ display: "flex", borderBottom: "1px solid #f0ebe0", background: "#faf8f4", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", borderBottom: "1px solid #f0ebe0", background: "#faf8f4", flexWrap: "wrap", alignItems: "center" }}>
         {tabBtn("preview", "Podgląd renderowany", totalIssues > 0 ? totalIssues : null, totalIssues > 0 ? "#c0392b" : null)}
         {tabBtn("links", "Linki", links.length > 0 ? links.length : null)}
-        {tabBtn("code", `Kod HTML (${(html.length / 1024).toFixed(1)} KB)`)}
+        {tabBtn("code", `Kod HTML (${(displayHtml.length / 1024).toFixed(1)} KB)`)}
+        {isEdited && (
+          <span style={{ marginLeft: "auto", marginRight: 14, fontSize: 11, color: "#9a6e2a", background: "#fef3c7", padding: "3px 9px", borderRadius: 99, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6 }}>
+            edytowane ręcznie
+            <button onClick={resetEdits} style={{ background: "none", border: "none", color: "#9a6e2a", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }} title="Cofnij edycje">
+              <RefreshCw size={11} />
+            </button>
+          </span>
+        )}
       </div>
 
       {tab === "preview" && (
@@ -1855,28 +1892,40 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
       )}
 
       {tab === "code" && (
-        <pre className="mono-font scroll-thin" style={{
-          margin: 0,
-          padding: 18,
-          fontSize: 11,
-          lineHeight: 1.55,
-          color: "#d8d3c8",
-          background: "#1f2e1f",
-          maxHeight: 500,
-          overflow: "auto",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word"
-        }}>
-          {html}
-        </pre>
+        <textarea
+          className="mono-font scroll-thin"
+          value={displayHtml}
+          onChange={(e) => setEditedHtml(e.target.value)}
+          spellCheck={false}
+          style={{
+            display: "block",
+            width: "100%",
+            margin: 0,
+            padding: 18,
+            fontSize: 11,
+            lineHeight: 1.55,
+            color: "#d8d3c8",
+            background: "#1f2e1f",
+            border: "none",
+            outline: "none",
+            minHeight: 500,
+            maxHeight: 500,
+            overflow: "auto",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            resize: "vertical",
+            boxSizing: "border-box",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
+          }}
+        />
       )}
 
       <div style={{ display: "flex", gap: 8, padding: 14, borderTop: "1px solid #f0ebe0", background: "#faf8f4", flexWrap: "wrap" }}>
-        <button onClick={onCopy} style={{ ...btnPrimary, padding: "8px 14px", fontSize: 13, background: copied ? "#5b8c5a" : "#2d4a2d" }}>
-          {copied ? <Check size={14} /> : <Copy size={14} />}
-          {copied ? "Skopiowano cały artykuł" : "Kopiuj cały artykuł"}
+        <button onClick={copyDisplay} style={{ ...btnPrimary, padding: "8px 14px", fontSize: 13, background: copiedDisplay ? "#5b8c5a" : "#2d4a2d" }}>
+          {copiedDisplay ? <Check size={14} /> : <Copy size={14} />}
+          {copiedDisplay ? "Skopiowano cały kod artykułu" : "Kopiuj cały kod artykułu"}
         </button>
-        <button onClick={onDownload} style={btnSecondary}>
+        <button onClick={downloadDisplay} style={btnSecondary}>
           <Download size={13} /> Pobierz .html
         </button>
         <button onClick={copyJustBoxes} style={btnSecondary}>
