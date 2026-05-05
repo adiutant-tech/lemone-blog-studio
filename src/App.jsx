@@ -361,7 +361,48 @@ function slugifyToId(text) {
 }
 
 // === FULL ARTICLE ASSEMBLER ===
-function buildCompleteArticle(originalHtml, products, boxes, tocItems) {
+// Renders FAQ section as styled cards (no accordion — CMS sanitization strips
+// interactive `<details>` styling). Each Q&A is a self-contained div with inline styles.
+// Plus FAQPage JSON-LD schema embedded as <script> for SEO (Google rich results).
+function buildFaqHTML(items) {
+  const filtered = (items || []).filter(it => it && it.q && it.a);
+  if (filtered.length === 0) return "";
+
+  const cards = filtered.map(it => {
+    const q = escapeHtml(it.q.trim());
+    const a = escapeHtml(it.a.trim());
+    return `    <div style="border:1px solid #dce8dc;border-left:4px solid #5b8c5a;border-radius:10px;margin:14px 0;background:#fafbf8;padding:18px 22px;">
+        <p style="font-size:16px;font-weight:600;color:#2d4a2d;margin:0 0 10px;line-height:1.4;">
+            ${q}
+        </p>
+        <p style="font-size:14px;color:#3a4a3a;line-height:1.65;margin:0;">
+            ${a}
+        </p>
+    </div>`;
+  }).join("\n");
+
+  // JSON-LD FAQPage schema — Google reads this to potentially show Q&A in search results.
+  // Independent from visual rendering; works even bez akordeonu.
+  const schemaItems = filtered.map(it => ({
+    "@type": "Question",
+    "name": it.q.trim(),
+    "acceptedAnswer": { "@type": "Answer", "text": it.a.trim() }
+  }));
+  const schema = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": schemaItems
+  };
+  const schemaScript = `<script type="application/ld+json">${JSON.stringify(schema)}</script>`;
+
+  return `<div style="margin:40px 0 30px;">
+    <h2 style="font-size:22px;color:#2d4a2d;margin-bottom:18px;">Najczęściej zadawane pytania</h2>
+${cards}
+${schemaScript}
+</div>`;
+}
+
+function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems) {
   if (!originalHtml || !originalHtml.trim()) return "";
 
   const doc = new DOMParser().parseFromString(originalHtml, "text/html");
@@ -505,6 +546,40 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems) {
     } else {
       productLinks[0].after(newBox);
     }
+  }
+
+  // 7. Wstaw sekcję FAQ na samym dole artykułu (po Podsumowaniu, jako ostatni element treści).
+  // Jeśli artykuł miał już sekcję FAQ z poprzedniej generacji, wykasuj ją żeby nie duplikować.
+  // Wykrywanie starej: nasz schemat ma h2 "Najczęściej zadawane pytania" + zielone karty.
+  const oldFaqHeadings = Array.from(doc.querySelectorAll("h2")).filter(h =>
+    /najczęściej zadawane pytania/i.test(h.textContent || "")
+  );
+  for (const h of oldFaqHeadings) {
+    // Usuń wszystko od tego h2 do końca rodzica (ten h2 + następujące rodzeństwo do końca)
+    const parent = h.parentElement;
+    if (!parent) { h.remove(); continue; }
+    let el = h;
+    while (el) {
+      const next = el.nextSibling;
+      el.remove();
+      el = next;
+    }
+  }
+  // Też skasuj stare FAQPage JSON-LD schema (zostawiamy inne JSON-LD jak Article)
+  const oldFaqSchemas = Array.from(doc.querySelectorAll('script[type="application/ld+json"]')).filter(s => {
+    try {
+      const j = JSON.parse(s.textContent || "{}");
+      return j["@type"] === "FAQPage";
+    } catch (_) { return false; }
+  });
+  for (const s of oldFaqSchemas) s.remove();
+
+  // Wstaw nowy FAQ jeśli mamy treść
+  const faqHtml = buildFaqHTML(faqItems);
+  if (faqHtml) {
+    const tmp = doc.createElement("div");
+    tmp.innerHTML = faqHtml;
+    while (tmp.firstChild) doc.body.appendChild(tmp.firstChild);
   }
 
   return doc.body.innerHTML;
@@ -847,6 +922,76 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
   };
 }
 
+// === ANTHROPIC API CALL — FAQ GENERATOR ===
+// Wywoływane raz na końcu batcha (po wygenerowaniu wszystkich boxów).
+// Generuje 6 pytań + odpowiedzi dopasowanych do tematu artykułu.
+// Pytania mają NIE być parafrazami TOC (już je czytelnik widzi w spisie treści).
+async function generateFAQ(context) {
+  const tocText = (context.tocItems || []).map(t => `- ${t}`).join("\n") || "(brak)";
+  const productsText = (context.products || []).map(p => `- ${p.name}${p.subtitle ? " (" + p.subtitle + ")" : ""}`).join("\n") || "(brak)";
+
+  const prompt = `Jesteś redaktorem polskiego bloga kosmetyczno-zdrowotnego Lemoné. Wygeneruj sekcję FAQ — 6 najczęściej zadawanych pytań wraz z odpowiedziami — która uzupełni poniższy artykuł.
+
+KONTEKST ARTYKUŁU
+Sekcje (TOC):
+${tocText}
+
+Produkty omawiane w artykule:
+${productsText}
+
+ZASADY DOBORU PYTAŃ
+- Pytania mają być takie, jakie czytelnik faktycznie wpisze w Google (search intent — "jak", "kiedy", "czy", "ile", "co lepiej")
+- NIE PARAFRAZUJ pytań ze spisu treści (TOC) — czytelnik już je widzi powyżej; rozszerz temat o pytania komplementarne
+- Każde pytanie ma rozpocząć dyskusję której artykuł nie pokrywa wprost
+- Unikaj pytań abstrakcyjnych ("co to jest..."); preferuj praktyczne ("jak długo stosować...", "czy można łączyć z...", "dla kogo nie jest wskazane...")
+- Różnorodność: zadawaj pytania z różnych kątów (skutki uboczne, łączenie produktów, częstotliwość, alternatywy, konkretne grupy odbiorców)
+
+ZASADY ODPOWIEDZI
+- 2-4 zdania, konkretne, faktyczne
+- Polski język, naturalny ton
+- NIE rozpoczynaj od "Tak,"/"Nie," — rozbuduj odpowiedź żeby brzmiała redaktorsko
+- NIE wymyślaj statystyk, badań klinicznych ani konkretnych cyfr które nie są powszechną wiedzą
+- NIE polecaj konkretnych produktów (chyba że tylko ogólnie wspomnij kategorię)
+
+ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
+{"items":[{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}]}`;
+
+  const apiUrl = import.meta.env.VITE_API_URL || "https://api.anthropic.com/v1/messages";
+  const response = await fetchWithRetry(apiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      messages: [{ role: "user", content: prompt }]
+    })
+  });
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.text();
+      if (body) detail = body.slice(0, 300);
+    } catch (_) {}
+    throw new Error(`FAQ API ${response.status}: ${detail}`);
+  }
+
+  const data = await response.json();
+  const text = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("").trim();
+  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+
+  let parsed;
+  try { parsed = JSON.parse(cleaned); }
+  catch (e) { throw new Error("FAQ — niepoprawny JSON: " + cleaned.slice(0, 120)); }
+
+  const items = (Array.isArray(parsed.items) ? parsed.items : [])
+    .filter(it => it && typeof it.q === "string" && typeof it.a === "string")
+    .map(it => ({ q: it.q.trim(), a: it.a.trim() }))
+    .filter(it => it.q && it.a);
+
+  return items;
+}
+
 // === HTML BUILDER ===
 const escapeHtml = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -906,6 +1051,9 @@ export default function App() {
   const [boxes, setBoxes] = useState({});
   const [progress, setProgress] = useState(null);
   const [tocItems, setTocItems] = useState([]);
+  const [faqItems, setFaqItems] = useState([]);
+  const [faqStatus, setFaqStatus] = useState("idle"); // idle | loading | ready | error
+  const [faqError, setFaqError] = useState(null);
 
   const handleAnalyze = async () => {
     const found = parseProducts(input);
@@ -916,7 +1064,11 @@ export default function App() {
     }
     setProducts(found);
     setBoxes({});
-    setTocItems(extractTocItems(input));
+    setFaqItems([]);
+    setFaqStatus("idle");
+    setFaqError(null);
+    const initialToc = extractTocItems(input);
+    setTocItems(initialToc);
     setStep("results");
 
     setProgress({ current: 0, total: found.length });
@@ -939,6 +1091,33 @@ export default function App() {
     // Te które nie działają, usuwamy z `related` i regenerujemy HTML boxa.
     if (Object.keys(generatedBoxes).length > 0) {
       await validateRelatedSlugs(found, generatedBoxes);
+    }
+
+    // FAQ generuje się raz, po batchu i walidacji slugów. Niezależne od slug-validation —
+    // jeśli walidacja padnie, FAQ i tak ma sens. Jeśli FAQ padnie, boxy są nieruszane.
+    if (Object.keys(generatedBoxes).length > 0) {
+      setFaqStatus("loading");
+      try {
+        const items = await generateFAQ({ products: found, tocItems: initialToc });
+        setFaqItems(items);
+        setFaqStatus("ready");
+      } catch (e) {
+        setFaqError(e.message || String(e));
+        setFaqStatus("error");
+      }
+    }
+  };
+
+  const regenerateFaq = async () => {
+    setFaqStatus("loading");
+    setFaqError(null);
+    try {
+      const items = await generateFAQ({ products, tocItems });
+      setFaqItems(items);
+      setFaqStatus("ready");
+    } catch (e) {
+      setFaqError(e.message || String(e));
+      setFaqStatus("error");
     }
   };
 
@@ -1057,7 +1236,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v1.7 · powrót do 156 kategorii (oryginał z Mapowania)
+                v1.8 · generator FAQ + edycja inline + JSON-LD schema
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1085,6 +1264,11 @@ export default function App() {
             onRetry={runOne}
             tocItems={tocItems}
             setTocItems={setTocItems}
+            faqItems={faqItems}
+            setFaqItems={setFaqItems}
+            faqStatus={faqStatus}
+            faqError={faqError}
+            onRegenerateFaq={regenerateFaq}
             rawHtml={input}
           />
         )}
@@ -1176,7 +1360,7 @@ function EmptyView({ onBack }) {
   );
 }
 
-function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, setTocItems, rawHtml }) {
+function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, setTocItems, faqItems, setFaqItems, faqStatus, faqError, onRegenerateFaq, rawHtml }) {
   const [copiedAll, setCopiedAll] = useState(false);
   const [copiedFull, setCopiedFull] = useState(false);
 
@@ -1186,8 +1370,8 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
 
   const fullArticleHtml = useMemo(() => {
     if (!allReady) return "";
-    return buildCompleteArticle(rawHtml, products, boxes, tocItems);
-  }, [rawHtml, products, boxes, tocItems, allReady]);
+    return buildCompleteArticle(rawHtml, products, boxes, tocItems, faqItems);
+  }, [rawHtml, products, boxes, tocItems, faqItems, allReady]);
 
   const copyText = async (text, setFlag) => {
     try {
@@ -1271,6 +1455,19 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
           />
         ))}
       </div>
+
+      <SectionHeader
+        title="FAQ — Najczęściej zadawane pytania"
+        subtitle="6 pytań i odpowiedzi wygenerowanych dla artykułu — możesz edytować przed kopiowaniem. Wstawiane na końcu artykułu + FAQPage schema dla SEO."
+        extraTop={28}
+      />
+      <FaqCard
+        items={faqItems}
+        setItems={setFaqItems}
+        status={faqStatus}
+        error={faqError}
+        onRegenerate={onRegenerateFaq}
+      />
 
       {allReady && (
         <>
@@ -1387,6 +1584,154 @@ function TocCard({ items, setItems }) {
             {copied ? "Skopiowano" : "Kopiuj tylko spis treści"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function FaqCard({ items, setItems, status, error, onRegenerate }) {
+  const [copied, setCopied] = useState(false);
+
+  const updateQ = (i, v) => setItems(items.map((it, idx) => idx === i ? { ...it, q: v } : it));
+  const updateA = (i, v) => setItems(items.map((it, idx) => idx === i ? { ...it, a: v } : it));
+  const removeItem = (i) => setItems(items.filter((_, idx) => idx !== i));
+  const addItem = () => setItems([...items, { q: "", a: "" }]);
+
+  const html = useMemo(() => buildFaqHTML(items), [items]);
+
+  const copyFaq = async () => {
+    if (!html) return;
+    try {
+      await navigator.clipboard.writeText(html);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = html;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (_) {}
+      document.body.removeChild(ta);
+    }
+  };
+
+  // Loading state — boxy jeszcze się generują, FAQ czeka albo właśnie się generuje
+  if (status === "loading") {
+    return (
+      <div style={{ background: "#fff", border: "1px solid #e8e4dc", borderRadius: 12, padding: 22, color: "#5b6b5b", fontSize: 13, display: "flex", alignItems: "center", gap: 10 }}>
+        <Loader2 size={14} className="spin" />
+        Generuję 6 pytań i odpowiedzi dopasowanych do tematyki artykułu...
+      </div>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <div style={{ background: "#fff", border: "1px solid #fde2e0", borderRadius: 12, padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, color: "#8a2a1f", fontSize: 13, marginBottom: 10 }}>
+          <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Generowanie FAQ nie powiodło się</div>
+            <div style={{ fontSize: 12, color: "#a04a3f" }}>{error || "Nieznany błąd"}</div>
+          </div>
+        </div>
+        <button onClick={onRegenerate} style={{ ...btnSecondary, fontSize: 12 }}>
+          <RefreshCw size={12} /> Spróbuj ponownie
+        </button>
+      </div>
+    );
+  }
+
+  if (status === "idle" || !items || items.length === 0) {
+    return (
+      <div style={{ background: "#fff", border: "1px solid #e8e4dc", borderRadius: 12, padding: 22, color: "#a8a89a", fontSize: 13 }}>
+        FAQ pojawi się tu gdy boxy się wygenerują. {status !== "idle" && (
+          <button onClick={onRegenerate} style={{ ...btnSecondary, fontSize: 12, marginLeft: 8 }}>
+            <RefreshCw size={12} /> Wygeneruj
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e8e4dc", borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ padding: 18, borderBottom: "1px solid #f0ebe0", background: "#faf8f4", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 10.5, fontWeight: 600, color: "#5b8c5a", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Pytania i odpowiedzi ({items.length})
+        </div>
+        <div style={{ flex: 1 }} />
+        <button onClick={onRegenerate} style={{ ...btnSecondary, fontSize: 12 }} title="Wygeneruj nowe 6 pytań">
+          <RefreshCw size={12} /> Wygeneruj ponownie
+        </button>
+        <button
+          onClick={copyFaq}
+          style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12.5, background: copied ? "#5b8c5a" : "#2d4a2d" }}
+        >
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+          {copied ? "Skopiowano" : "Kopiuj tylko FAQ"}
+        </button>
+      </div>
+
+      <div style={{ padding: 18, display: "grid", gap: 14 }}>
+        {items.map((it, i) => (
+          <div key={i} style={{ border: "1px solid #ecf0e6", borderRadius: 8, padding: 14, background: "#fcfdfb" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
+              <span className="mono-font" style={{ fontSize: 11, color: "#a8a89a", paddingTop: 9, minWidth: 22 }}>
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <input
+                value={it.q || ""}
+                onChange={(e) => updateQ(i, e.target.value)}
+                placeholder="Pytanie..."
+                style={{
+                  flex: 1,
+                  padding: "8px 10px",
+                  border: "1px solid #d8d3c8",
+                  borderRadius: 5,
+                  fontSize: 13,
+                  fontFamily: "inherit",
+                  fontWeight: 600,
+                  color: "#1f2e1f",
+                  background: "#faf8f4",
+                  outline: "none"
+                }}
+              />
+              <button
+                onClick={() => removeItem(i)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#a8a89a", padding: 6, display: "flex" }}
+                title="Usuń"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <textarea
+              value={it.a || ""}
+              onChange={(e) => updateA(i, e.target.value)}
+              placeholder="Odpowiedź..."
+              rows={3}
+              style={{
+                width: "100%",
+                marginLeft: 32,
+                width: "calc(100% - 32px - 30px)",
+                padding: "8px 10px",
+                border: "1px solid #d8d3c8",
+                borderRadius: 5,
+                fontSize: 13,
+                fontFamily: "inherit",
+                lineHeight: 1.5,
+                color: "#3a4a3a",
+                background: "#faf8f4",
+                outline: "none",
+                resize: "vertical",
+                boxSizing: "border-box"
+              }}
+            />
+          </div>
+        ))}
+        <button onClick={addItem} style={{ ...btnSecondary, fontSize: 12, justifySelf: "start" }}>
+          <Plus size={12} /> Dodaj pytanie
+        </button>
       </div>
     </div>
   );
