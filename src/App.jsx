@@ -1309,10 +1309,14 @@ export default function App() {
 
   const handleReset = () => {
     setStep("input");
+    setInput("");
     setProducts([]);
     setBoxes({});
     setProgress(null);
     setTocItems([]);
+    setFaqItems([]);
+    setFaqStatus("idle");
+    setFaqError(null);
   };
 
   const allReady = products.length > 0 && products.every(p => boxes[p.url]?.status === "ready");
@@ -1341,7 +1345,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.4 · font-size 14px w lp-info + naprawa małych podtytułów w listach
+                v2.5 · "Nowy artykuł" czyści input + FAQ state
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
