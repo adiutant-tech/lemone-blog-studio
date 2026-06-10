@@ -212,6 +212,17 @@ function getCategoriesForContainers(containers) {
 
 // === HTML PARSER ===
 const PRODUCT_URL_RE = /^\/p-.+\.html$/;
+// Wariant tolerancyjny — łapie też /cms/p-XXX.html (stary CMS edytor czasem dodaje prefix /cms/
+// do obrazków produktów mimo że link tekstowy do produktu go nie ma). Bez tego apka nie znajdowała
+// obrazka i generowała lemone-product bez lp-photo, a stary <p><a><img></a></p> zostawał luźno w treści.
+const PRODUCT_URL_TOLERANT_RE = /^(?:\/cms)?\/p-.+\.html$/;
+
+// Zwraca canoniczny URL produktu z dowolnego wariantu — strip prefixu /cms/.
+// Używane do porównań: czy link kieruje na ten sam produkt, niezależnie czy ma /cms/ czy nie.
+function canonicalProductUrl(href) {
+  if (!href) return "";
+  return href.replace(/^\/cms\//, "/");
+}
 
 function parseProducts(input) {
   const html = (input || "").trim();
@@ -219,14 +230,18 @@ function parseProducts(input) {
 
   const doc = new DOMParser().parseFromString(html, "text/html");
   const allLinks = Array.from(doc.querySelectorAll("a[href]"));
-  const productLinks = allLinks.filter(a => PRODUCT_URL_RE.test(a.getAttribute("href")));
+  // Łapiemy WSZYSTKIE warianty (z i bez /cms/), ale grupujemy po canonical URL (bez prefixu).
+  // Dzięki temu link "/p-XXX.html" i "/cms/p-XXX.html" trafiają do tego samego produktu — ważne
+  // bo niektóre obrazki w CMS mają prefix /cms/ podczas gdy tytuł produktu go nie ma.
+  const productLinks = allLinks.filter(a => PRODUCT_URL_TOLERANT_RE.test(a.getAttribute("href")));
 
   if (productLinks.length === 0) return [];
 
   const order = [];
   const byUrl = new Map();
   for (const link of productLinks) {
-    const url = link.getAttribute("href");
+    const rawHref = link.getAttribute("href");
+    const url = canonicalProductUrl(rawHref); // ZAWSZE canonical (bez /cms/)
     if (!byUrl.has(url)) { byUrl.set(url, []); order.push(url); }
     byUrl.get(url).push(link);
   }
@@ -502,19 +517,28 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   }
 
   // 5. Dla każdego produktu — znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
-  // Strategia: znajdujemy <p> zawierający <a><img></a> (z linkiem do tego produktu), wycinamy ten <p>
-  // i wstawiamy zamiast niego pełną strukturę <div class="lemone-product"><div class="lp-photo">...</div><div class="lp-info">...</div></div>.
+  // Strategia: znajdujemy <p> zawierający <a><img></a> (z linkiem do tego produktu, BĄDŹ z /cms/ prefix),
+  // wycinamy ten <p> i wstawiamy zamiast niego pełną strukturę lemone-product.
   // Tytuł produktu (paragraf z <a><strong>nazwa</strong></a>) zostaje NIETKNIĘTY przed strukturą.
   // Opis (paragraf po zdjęciu) zostaje NIETKNIĘTY za strukturą.
+  // BUG-FIX (v2.2): obsługa wariantu /cms/p-XXX.html — niektóre obrazki w wkleconym HTML z CMS
+  // mają prefix /cms/ w linku, mimo że link tekstowy do produktu nie ma tego prefixu.
+  // Bez tego apka generowała lemone-product bez lp-photo i zostawiała "luźny" <p><img></p> w treści.
   for (const product of products) {
     const box = boxes[product.url];
     if (!box || box.status !== "ready") continue;
 
-    // Wszystkie linki do tego konkretnego produktu w całym dokumencie
-    const productLinks = Array.from(doc.querySelectorAll(`a[href="${CSS.escape(product.url)}"]`));
+    // Wszystkie linki które MATCHUJĄ ten produkt — z dowolnym wariantem prefixu /cms/.
+    // Porównujemy canonicalny URL (bez /cms/) zamiast literalnego stringa.
+    const allLinks = Array.from(doc.querySelectorAll("a[href]"));
+    const productLinks = allLinks.filter(a => {
+      const href = a.getAttribute("href") || "";
+      if (!PRODUCT_URL_TOLERANT_RE.test(href)) return false;
+      return canonicalProductUrl(href) === product.url;
+    });
     if (productLinks.length === 0) continue;
 
-    // Znajdź paragraf-zdjęcie: <p> zawierający <a> (z linkiem produktu) z <img> w środku
+    // Znajdź paragraf-zdjęcie: <p> zawierający <a> (z linkiem produktu, niezależnie od /cms/) z <img>
     let photoP = null;
     let photoImg = null;
     for (const link of productLinks) {
@@ -550,7 +574,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       // Mamy paragraf-zdjęcie → ZAMIEŃ go na strukturę lemone-product (zdjęcie idzie do lp-photo)
       photoP.replaceWith(wrapperEl);
     } else {
-      // Brak paragrafu-zdjęcia → wstaw strukturę po tytule produktu (paragraf z linkiem nazwy)
+      // Brak paragrafu-zdjęcia (rzadki przypadek) → wstaw strukturę po tytule produktu
       let titleP = null;
       for (const link of productLinks) {
         const p = link.closest("p");
@@ -561,6 +585,26 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       } else {
         productLinks[0].after(wrapperEl);
       }
+    }
+
+    // Po wstawieniu lemone-product: jeszcze raz przeleć przez WSZYSTKIE pozostałe paragrafy-zdjęcia
+    // tego produktu i USUŃ je. To dotyczy wariantów /cms/p-XXX gdzie obrazek był w innym paragrafie
+    // niż ten który zastąpiliśmy. Bez tego stary <p><a href="/cms/..."><img></a></p> zostawał luźny.
+    const remainingLinks = Array.from(doc.querySelectorAll("a[href]")).filter(a => {
+      const href = a.getAttribute("href") || "";
+      if (!PRODUCT_URL_TOLERANT_RE.test(href)) return false;
+      return canonicalProductUrl(href) === product.url;
+    });
+    for (const link of remainingLinks) {
+      const img = link.querySelector("img");
+      if (!img) continue;
+      // Sprawdź czy ten obrazek nie jest już w naszej strukturze lemone-product
+      if (link.closest("div.lemone-product")) continue;
+      const p = link.closest("p");
+      if (!p) continue;
+      // Tylko jeśli paragraf zawiera tylko obrazek (nie ruszamy paragrafów z tekstem!)
+      if (p.textContent.replace(/\s+/g, "") !== "") continue;
+      p.remove();
     }
   }
 
@@ -1276,7 +1320,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.1 · format dokładnie wg wzoru z produkcji
+                v2.2 · tolerancja /cms/ prefixu w linkach obrazków
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
