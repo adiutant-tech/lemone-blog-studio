@@ -1098,11 +1098,14 @@ ${whyLines.map(l => `            → ${escapeHtml(l)}`).join("<br>\n")}
 
 // Buduje sam wrapper lemone-product (zdjęcie + info) — bez tytułu nad i bez opisu pod.
 // Format dokładnie jak we wzorze Roberta: lp-photo z newline+indent przy <a>, lp-info z paragrafami.
+// UWAGA (v2.3): inline style="border-radius:10px" na <img> łamie spec Szczepana "zero inline".
+// To kompromisowy obejście — do usunięcia gdy Szczepan dorzuci do CSS motywu regułę:
+//   .lp-photo img { border-radius: 10px; }
 function buildBoxOnly(product, data) {
   const inner = buildBoxOnlyInner(data);
   const photoHtml = product.imageUrl
     ? `    <div class="lp-photo">
-        <a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}"></a>
+        <a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}" style="border-radius:10px;"></a>
     </div>`
     : "";
 
@@ -1320,7 +1323,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.2 · tolerancja /cms/ prefixu w linkach obrazków
+                v2.3 · zaokrąglone rogi obrazków (inline workaround)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
