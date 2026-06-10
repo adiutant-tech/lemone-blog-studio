@@ -1021,32 +1021,45 @@ const escapeHtml = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
 // Buduje TYLKO zawartość boksu z korzyściami (do umieszczenia obok <div class="lp-photo">).
 // Nie zawiera <div class="lp-info"> — tylko paragrafy. To pozwala ponownie użyć tej samej funkcji
 // w różnych kontekstach (osadzenie w lemone-product albo standalone).
+// Buduje paragrafy z korzyściami WG DOKŁADNEGO formatowania z przykładu Roberta:
+// każdy paragraf ma newline+indent po <p>, każdy element w środku osobno z indentem.
+// Format: <p>\n    <strong>...</strong><br>\n    ✔ ...<br>\n    ✔ ...<br>\n    ✔ ...\n</p>
 function buildBoxOnlyInner(data) {
   const forWhoLines = (data.forWho || []).map(l => l.trim()).filter(Boolean);
   const whyLines = (data.whyWorth || []).map(l => l.trim()).filter(Boolean);
   const related = data.related || [];
 
   const forWhoHtml = forWhoLines.length
-    ? `    <p><strong>Dla kogo?</strong><br>${forWhoLines.map(l => "✔ " + escapeHtml(l)).join("<br>")}</p>`
+    ? `        <p>
+            <strong>Dla kogo?</strong><br>
+${forWhoLines.map(l => `            ✔ ${escapeHtml(l)}`).join("<br>\n")}
+        </p>`
     : "";
 
   const whyHtml = whyLines.length
-    ? `    <p><strong>Dlaczego warto:</strong><br>${whyLines.map(l => "→ " + escapeHtml(l)).join("<br>")}</p>`
+    ? `        <p>
+            <strong>Dlaczego warto:</strong><br>
+${whyLines.map(l => `            → ${escapeHtml(l)}`).join("<br>\n")}
+        </p>`
     : "";
 
   const relatedHtml = related.length
-    ? `    <p><strong>Powiązane:</strong> ${related.map(r => `<a href="${escapeHtml(r.slug)}">${escapeHtml(r.label)}</a>`).join(" • ")}</p>`
+    ? `        <p>
+            <strong>Powiązane:</strong> ${related.map(r => `<a href="${escapeHtml(r.slug)}">${escapeHtml(r.label)}</a>`).join(" • ")}
+        </p>`
     : "";
 
   return [forWhoHtml, whyHtml, relatedHtml].filter(Boolean).join("\n");
 }
 
 // Buduje sam wrapper lemone-product (zdjęcie + info) — bez tytułu nad i bez opisu pod.
-// Używane przez buildCompleteArticle do wstawiania struktury obok istniejącego tytułu/opisu.
+// Format dokładnie jak we wzorze Roberta: lp-photo z newline+indent przy <a>, lp-info z paragrafami.
 function buildBoxOnly(product, data) {
   const inner = buildBoxOnlyInner(data);
   const photoHtml = product.imageUrl
-    ? `    <div class="lp-photo"><a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}"></a></div>`
+    ? `    <div class="lp-photo">
+        <a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}"></a>
+    </div>`
     : "";
 
   return `<div class="lemone-product">
@@ -1263,7 +1276,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.0 · nowy format lemone-product (klasy CSS, bez inline)
+                v2.1 · format dokładnie wg wzoru z produkcji
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
