@@ -516,6 +516,19 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     }
   }
 
+  // 4.5 NORMALIZACJA ANOMALII CZCIONKOWYCH (v2.4).
+  // CMS wstawia podtytuły wewnątrz list jako <h5> lub <h6>, które domyślnie są MNIEJSZE
+  // od paragrafu (~0.83em). Wizualnie tytuł powinien być WIĘKSZY i pogrubiony, nie mniejszy.
+  // Wymuszamy inline style na takich elementach żeby wyglądały jak prawdziwy podtytuł sekcji.
+  const smallHeadings = doc.querySelectorAll("li h5, li h6");
+  for (const h of smallHeadings) {
+    const existing = (h.getAttribute("style") || "").trim();
+    // Skip jeśli już znormalizowane (idempotent)
+    if (/font-size\s*:\s*16px/i.test(existing)) continue;
+    const sep = existing && !existing.endsWith(";") ? ";" : "";
+    h.setAttribute("style", existing + sep + "font-size:16px;font-weight:600;margin:0 0 6px;");
+  }
+
   // 5. Dla każdego produktu — znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
   // Strategia: znajdujemy <p> zawierający <a><img></a> (z linkiem do tego produktu, BĄDŹ z /cms/ prefix),
   // wycinamy ten <p> i wstawiamy zamiast niego pełną strukturę lemone-product.
@@ -1068,27 +1081,32 @@ const escapeHtml = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
 // Buduje paragrafy z korzyściami WG DOKŁADNEGO formatowania z przykładu Roberta:
 // każdy paragraf ma newline+indent po <p>, każdy element w środku osobno z indentem.
 // Format: <p>\n    <strong>...</strong><br>\n    ✔ ...<br>\n    ✔ ...<br>\n    ✔ ...\n</p>
+// UWAGA (v2.4): inline style="font-size:14px" na <p> w lp-info — kompromisowy workaround
+// (łamie spec Szczepana "zero inline"), do usunięcia gdy Szczepan dorzuci do motywu:
+//   .lp-info p { font-size: 14px; }
 function buildBoxOnlyInner(data) {
   const forWhoLines = (data.forWho || []).map(l => l.trim()).filter(Boolean);
   const whyLines = (data.whyWorth || []).map(l => l.trim()).filter(Boolean);
   const related = data.related || [];
 
+  const P_STYLE = ' style="font-size:14px;"'; // jedyne miejsce do podmiany wartości
+
   const forWhoHtml = forWhoLines.length
-    ? `        <p>
+    ? `        <p${P_STYLE}>
             <strong>Dla kogo?</strong><br>
 ${forWhoLines.map(l => `            ✔ ${escapeHtml(l)}`).join("<br>\n")}
         </p>`
     : "";
 
   const whyHtml = whyLines.length
-    ? `        <p>
+    ? `        <p${P_STYLE}>
             <strong>Dlaczego warto:</strong><br>
 ${whyLines.map(l => `            → ${escapeHtml(l)}`).join("<br>\n")}
         </p>`
     : "";
 
   const relatedHtml = related.length
-    ? `        <p>
+    ? `        <p${P_STYLE}>
             <strong>Powiązane:</strong> ${related.map(r => `<a href="${escapeHtml(r.slug)}">${escapeHtml(r.label)}</a>`).join(" • ")}
         </p>`
     : "";
@@ -1323,7 +1341,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.3 · zaokrąglone rogi obrazków (inline workaround)
+                v2.4 · font-size 14px w lp-info + naprawa małych podtytułów w listach
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
