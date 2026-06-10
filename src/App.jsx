@@ -449,102 +449,118 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     }
   }
 
-  // 4. TRANSFORMACJA struktury obrazków: <p><a><strong>?<img></strong>?</a></p> → <figure class="image"><a><img></a></figure>
-  // To wzorzec który działa na sklep.lemone.pl (potwierdzone na produkcyjnym artykule z Dermaquest).
-  // CSS sklepu rozciąga <img> w <p> na 100% szerokości, ale honoruje max-width:400px na <img> w <figure class="image">.
-  // Walka z CSS przez !important nie działa — różnica jest w opakowaniu, nie w stylu.
-  const allParas = Array.from(doc.querySelectorAll("p"));
-  for (const p of allParas) {
-    const link = p.querySelector("a");
-    if (!link) continue;
-    const href = link.getAttribute("href") || "";
-    if (!PRODUCT_URL_RE.test(href)) continue;
-    const img = link.querySelector("img");
-    if (!img) continue;
-    // Tylko jeśli paragraf zawiera WYŁĄCZNIE obrazek (i ewentualnie whitespace)
-    if (p.textContent.replace(/\s+/g, "") !== "") continue;
-
-    // Buduj <figure class="image" style="height:auto;"><a href="..."><img style="..." src="..." alt="..." width="400"></a></figure>
-    const figure = doc.createElement("figure");
-    figure.setAttribute("class", "image");
-    figure.setAttribute("style", "height:auto;");
-
-    const newA = doc.createElement("a");
-    newA.setAttribute("href", href);
-
-    const newImg = doc.createElement("img");
-    newImg.setAttribute("src", img.getAttribute("src") || "");
-    if (img.getAttribute("alt")) newImg.setAttribute("alt", img.getAttribute("alt"));
-    newImg.setAttribute("width", "400");
-    newImg.setAttribute("style", "display:block;max-width:400px;");
-
-    newA.appendChild(newImg);
-    figure.appendChild(newA);
-    p.replaceWith(figure);
-  }
-
-  // 5. Wyczyść WSZYSTKIE istniejące żółte boxy z poprzednich generacji.
-  // Robimy to najpierw, niezależnie od `wrapper` — wcześniejsza logika zostawiała stare boxy
-  // gdy struktura była zagnieżdżona i `closest("div.product")` zwracał innego "rodzica".
-  const oldBoxes = Array.from(doc.querySelectorAll("div[style]")).filter(el =>
+  // 4. CLEANUP starych formatów z poprzednich generacji apki.
+  // Czyścimy TRZY warianty żeby regeneracja zawsze zaczynała z czystą kartą:
+  //   (a) stare żółte boxy ze stylem inline background-color:#fff8e6 (apka <= v1.9)
+  //   (b) stare <figure class="image"> wstawione przez image transform (v1.6-v1.9)
+  //   (c) stare <div class="lemone-product"> (poprzednie uruchomienie nowego formatu — np. user zregenerował)
+  const oldYellowBoxes = Array.from(doc.querySelectorAll("div[style]")).filter(el =>
     /background-color:\s*#fff8e6/i.test(el.getAttribute("style") || "")
   );
-  for (const oldBox of oldBoxes) oldBox.remove();
+  for (const el of oldYellowBoxes) el.remove();
 
-  // 6. Dla każdego produktu — znajdź najlepszy "anchor" do wstawienia boxa.
-  // Priorytet: <p> z <img> linku produktu → <figure> linku produktu → <p> z linkiem tytułowym → fallback.
-  // Działa zarówno dla zagnieżdżonej struktury Roberta (img w <p><a>...</a></p>)
-  // jak i dla klasycznych artykułów z <figure class="image">.
+  const oldFigures = Array.from(doc.querySelectorAll("figure.image"));
+  for (const fig of oldFigures) {
+    // Wyciągnij obrazek z figure i wstaw z powrotem jako "luźny" link z img w paragrafie,
+    // żeby krok 5 mógł go znów ZNALEŹĆ i opakować w lemone-product.
+    const link = fig.querySelector("a");
+    const img = fig.querySelector("img");
+    if (link && img) {
+      const newP = doc.createElement("p");
+      const newA = doc.createElement("a");
+      newA.setAttribute("href", link.getAttribute("href") || "");
+      const newImg = doc.createElement("img");
+      newImg.setAttribute("src", img.getAttribute("src") || "");
+      if (img.getAttribute("alt")) newImg.setAttribute("alt", img.getAttribute("alt"));
+      newA.appendChild(newImg);
+      newP.appendChild(newA);
+      fig.replaceWith(newP);
+    } else {
+      fig.remove();
+    }
+  }
+
+  const oldLemoneProducts = Array.from(doc.querySelectorAll("div.lemone-product"));
+  for (const lp of oldLemoneProducts) {
+    // Rozpakuj zdjęcie z lemone-product i wstaw z powrotem jako luźny <p> z linkiem do produktu,
+    // żeby krok 5 mógł go ponownie opakować w nową strukturę.
+    const photoA = lp.querySelector(".lp-photo a");
+    const photoImg = lp.querySelector(".lp-photo img");
+    if (photoA && photoImg) {
+      const newP = doc.createElement("p");
+      const newA = doc.createElement("a");
+      newA.setAttribute("href", photoA.getAttribute("href") || "");
+      const newImg = doc.createElement("img");
+      newImg.setAttribute("src", photoImg.getAttribute("src") || "");
+      if (photoImg.getAttribute("alt")) newImg.setAttribute("alt", photoImg.getAttribute("alt"));
+      newA.appendChild(newImg);
+      newP.appendChild(newA);
+      lp.replaceWith(newP);
+    } else {
+      lp.remove();
+    }
+  }
+
+  // 5. Dla każdego produktu — znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
+  // Strategia: znajdujemy <p> zawierający <a><img></a> (z linkiem do tego produktu), wycinamy ten <p>
+  // i wstawiamy zamiast niego pełną strukturę <div class="lemone-product"><div class="lp-photo">...</div><div class="lp-info">...</div></div>.
+  // Tytuł produktu (paragraf z <a><strong>nazwa</strong></a>) zostaje NIETKNIĘTY przed strukturą.
+  // Opis (paragraf po zdjęciu) zostaje NIETKNIĘTY za strukturą.
   for (const product of products) {
     const box = boxes[product.url];
     if (!box || box.status !== "ready") continue;
 
-    const newBoxHtml = buildBoxOnly({
+    // Wszystkie linki do tego konkretnego produktu w całym dokumencie
+    const productLinks = Array.from(doc.querySelectorAll(`a[href="${CSS.escape(product.url)}"]`));
+    if (productLinks.length === 0) continue;
+
+    // Znajdź paragraf-zdjęcie: <p> zawierający <a> (z linkiem produktu) z <img> w środku
+    let photoP = null;
+    let photoImg = null;
+    for (const link of productLinks) {
+      const img = link.querySelector("img");
+      if (!img) continue;
+      const p = link.closest("p");
+      if (!p) continue;
+      // Paragraf zawiera TYLKO obrazek (tekst pusty) — to klasyczny "paragraf zdjęcia"
+      if (p.textContent.replace(/\s+/g, "") !== "") continue;
+      photoP = p;
+      photoImg = img;
+      break;
+    }
+
+    // Buduj product object z aktualnym imageUrl (z faktycznego HTML, nie z `product.imageUrl`,
+    // żeby nie używać stale data jeśli ktoś zmienił URL obrazka)
+    const productWithImg = {
+      ...product,
+      imageUrl: photoImg ? (photoImg.getAttribute("src") || product.imageUrl) : product.imageUrl
+    };
+
+    const wrapperHtml = buildBoxOnly(productWithImg, {
       forWho: box.forWho,
       whyWorth: box.whyWorth,
       related: box.related
     });
     const tmp = doc.createElement("div");
-    tmp.innerHTML = newBoxHtml;
-    const newBox = tmp.firstElementChild;
-    if (!newBox) continue;
+    tmp.innerHTML = wrapperHtml;
+    const wrapperEl = tmp.firstElementChild;
+    if (!wrapperEl) continue;
 
-    // Wszystkie linki do tego konkretnego produktu w całym dokumencie.
-    // (Inne produkty mają inne URL-e, więc to nie złapie zagnieżdżonych.)
-    const productLinks = Array.from(doc.querySelectorAll(`a[href="${CSS.escape(product.url)}"]`));
-    if (productLinks.length === 0) continue;
-
-    let anchor = null; // element po którym wstawimy box
-
-    // Priorytet 1: <p> zawierający <a><img>...</a></p> dla tego produktu
-    for (const link of productLinks) {
-      if (link.querySelector("img")) {
-        anchor = link.closest("p") || link.closest("figure") || link.parentElement;
-        if (anchor) break;
-      }
-    }
-
-    // Priorytet 2: <figure> zawierający link do tego produktu (stary format z <figure class="image">)
-    if (!anchor) {
-      for (const link of productLinks) {
-        const fig = link.closest("figure");
-        if (fig) { anchor = fig; break; }
-      }
-    }
-
-    // Priorytet 3: <p> zawierający link do tego produktu (paragraf tytułowy z nazwą)
-    if (!anchor) {
+    if (photoP) {
+      // Mamy paragraf-zdjęcie → ZAMIEŃ go na strukturę lemone-product (zdjęcie idzie do lp-photo)
+      photoP.replaceWith(wrapperEl);
+    } else {
+      // Brak paragrafu-zdjęcia → wstaw strukturę po tytule produktu (paragraf z linkiem nazwy)
+      let titleP = null;
       for (const link of productLinks) {
         const p = link.closest("p");
-        if (p) { anchor = p; break; }
+        if (p) { titleP = p; break; }
       }
-    }
-
-    // Wstaw box po anchorze. Jeśli żaden nie znaleziony — last resort: po pierwszym linku produktu.
-    if (anchor) {
-      anchor.after(newBox);
-    } else {
-      productLinks[0].after(newBox);
+      if (titleP) {
+        titleP.after(wrapperEl);
+      } else {
+        productLinks[0].after(wrapperEl);
+      }
     }
   }
 
@@ -997,52 +1013,64 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
 // === HTML BUILDER ===
 const escapeHtml = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-function buildBoxOnly(data) {
+// === HTML BUILDERS (v2.0 — nowy format zgodny ze spec Szczepana) ===
+// Klasy z motywu sklepu: lemone-product, lp-photo, lp-info.
+// CSS w motywie obsługuje: flex layout (desktop), kolumna (mobile <600px), kremowe tło, ramka.
+// ZASADY TWARDE: zero stylów inline, zero <figure>, <table>, <script>, atrybutu style, max-width, display:inline-block.
+
+// Buduje TYLKO zawartość boksu z korzyściami (do umieszczenia obok <div class="lp-photo">).
+// Nie zawiera <div class="lp-info"> — tylko paragrafy. To pozwala ponownie użyć tej samej funkcji
+// w różnych kontekstach (osadzenie w lemone-product albo standalone).
+function buildBoxOnlyInner(data) {
   const forWhoLines = (data.forWho || []).map(l => l.trim()).filter(Boolean);
   const whyLines = (data.whyWorth || []).map(l => l.trim()).filter(Boolean);
   const related = data.related || [];
 
   const forWhoHtml = forWhoLines.length
-    ? `    <p>\n        <strong>Dla kogo?</strong><br>\n${forWhoLines.map((l, i) => `        ✔ ${escapeHtml(l)}${i < forWhoLines.length - 1 ? "<br>" : ""}`).join("\n")}\n    </p>`
+    ? `    <p><strong>Dla kogo?</strong><br>${forWhoLines.map(l => "✔ " + escapeHtml(l)).join("<br>")}</p>`
     : "";
 
   const whyHtml = whyLines.length
-    ? `    <p>\n        <strong>Dlaczego warto:</strong><br>\n${whyLines.map((l, i) => `        → ${escapeHtml(l)}${i < whyLines.length - 1 ? "<br>" : ""}`).join("\n")}\n    </p>`
+    ? `    <p><strong>Dlaczego warto:</strong><br>${whyLines.map(l => "→ " + escapeHtml(l)).join("<br>")}</p>`
     : "";
 
   const relatedHtml = related.length
-    ? `    <p>\n        <strong>Powiązane:</strong> ${related.map(r => `<a href="${escapeHtml(r.slug)}">${escapeHtml(r.label)}</a>`).join(" • ")}\n    </p>`
+    ? `    <p><strong>Powiązane:</strong> ${related.map(r => `<a href="${escapeHtml(r.slug)}">${escapeHtml(r.label)}</a>`).join(" • ")}</p>`
     : "";
 
-  return `<div style="background-color:#fff8e6;border-radius:10px;border:1px solid #f0e6c8;margin:15px 0;padding:15px;">
-${[forWhoHtml, whyHtml, relatedHtml].filter(Boolean).join("\n")}
+  return [forWhoHtml, whyHtml, relatedHtml].filter(Boolean).join("\n");
+}
+
+// Buduje sam wrapper lemone-product (zdjęcie + info) — bez tytułu nad i bez opisu pod.
+// Używane przez buildCompleteArticle do wstawiania struktury obok istniejącego tytułu/opisu.
+function buildBoxOnly(product, data) {
+  const inner = buildBoxOnlyInner(data);
+  const photoHtml = product.imageUrl
+    ? `    <div class="lp-photo"><a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}"></a></div>`
+    : "";
+
+  return `<div class="lemone-product">
+${photoHtml}
+    <div class="lp-info">
+${inner}
+    </div>
 </div>`;
 }
 
+// Buduje PEŁNY pakiet do osobnego użycia (np. zakładka "Tylko boxy" w UI / kopiuj-wklej).
+// Tytuł nad strukturą, lemone-product (foto + info), bez opisu pod (opis jest poza naszą kontrolą — pochodzi z wkleconego artykułu).
 function buildBoxHTML(product, data) {
-  const innerBox = buildBoxOnly(data).split("\n").map(l => "            " + l).join("\n");
-
-  const figure = product.imageUrl
-    ? `            <figure class="image" style="height:auto;">
-                <a href="${escapeHtml(product.url)}"><img style="display:block;max-width:400px;" src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}" width="400"></a>
-            </figure>
-`
-    : "";
-
+  // Subtitle z wkleconego CMS (jak był) — normalizujemy do <strong> zgodnie ze spec Szczepana,
+  // żeby nawet stare span.subtitle dawały spójny output w nowym formacie.
   const subtitleHtml = product.subtitle
-    ? `\n                <a href="${escapeHtml(product.url)}"><span class="subtitle">${escapeHtml(product.subtitle)}</span></a>`
+    ? `<br><a href="${escapeHtml(product.url)}"><strong>${escapeHtml(product.subtitle)}</strong></a>`
     : "";
 
-  return `<div class="product">
-    <div class="row">
-        <div class="col-12">
-            <p style="text-align:left;">
-                <a href="${escapeHtml(product.url)}"><strong>${escapeHtml(product.name)}</strong></a><br>${subtitleHtml}
-            </p>
-${figure}${innerBox}
-        </div>
-    </div>
-</div>`;
+  const titleP = `<p><a href="${escapeHtml(product.url)}"><strong>${escapeHtml(product.name)}</strong></a>${subtitleHtml}</p>`;
+  const wrapper = buildBoxOnly(product, data);
+
+  return `${titleP}
+${wrapper}`;
 }
 
 // === MAIN APP ===
@@ -1172,16 +1200,11 @@ export default function App() {
         if (dead.length === 0) continue;
 
         const alive = box.related.filter(r => !dead.includes(r));
-        const newHtml = buildBoxHTML(product, {
-          forWho: box.forWho,
-          whyWorth: box.whyWorth,
-          related: alive
-        });
         const deadList = dead.map(r => r.slug).join(", ");
+        // Bez `html` — derywowane live przez komponenty
         next[product.url] = {
           ...box,
           related: alive,
-          html: newHtml,
           warnings: [...(box.warnings || []), `Usunięto ${dead.length} martwy(ch) slug(ów) (404 na sklepie): ${deadList}`]
         };
       }
@@ -1193,8 +1216,10 @@ export default function App() {
     setBoxes(prev => ({ ...prev, [product.url]: { status: "loading" } }));
     try {
       const data = await generateBoxData(product);
-      const html = buildBoxHTML(product, data);
-      const boxState = { status: "ready", ...data, html };
+      // Nie cache'ujemy `html` w state — HTML jest derywowany live z danych przez useMemo
+      // w komponencie. Zmiana funkcji buildBoxHTML w deployu automatycznie aktualizuje markup
+      // bez ponownego wywoływania API. State trzyma tylko surowe dane: forWho, whyWorth, related.
+      const boxState = { status: "ready", ...data };
       setBoxes(prev => ({ ...prev, [product.url]: boxState }));
       return boxState;
     } catch (e) {
@@ -1238,7 +1263,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v1.9 · edycja Pełnego artykułu inline + Q&amp;A heading
+                v2.0 · nowy format lemone-product (klasy CSS, bez inline)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1367,7 +1392,13 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
   const [copiedFull, setCopiedFull] = useState(false);
 
   const allBoxesHtml = useMemo(() => {
-    return products.map(p => boxes[p.url]?.html).filter(Boolean).join("\n\n");
+    // Derywujemy live z danych boxa (forWho/whyWorth/related) zamiast używać cached box.html.
+    // Zmiana w buildBoxHTML (np. nowy format markupu) automatycznie wpływa na wynik bez API calls.
+    return products.map(p => {
+      const box = boxes[p.url];
+      if (!box || box.status !== "ready") return null;
+      return buildBoxHTML(p, box);
+    }).filter(Boolean).join("\n\n");
   }, [products, boxes]);
 
   const fullArticleHtml = useMemo(() => {
@@ -2035,15 +2066,22 @@ function ProductCard({ product, box, index, onRetry }) {
   const [copied, setCopied] = useState(false);
   const status = box?.status || "pending";
 
+  // HTML derywujemy LIVE z danych boxa, nie z box.html. Dzięki temu zmiana w buildBoxHTML
+  // (np. deploy nowego formatu) natychmiast aktualizuje markup bez wywoływania API.
+  const displayHtml = useMemo(() => {
+    if (!box || box.status !== "ready") return "";
+    return buildBoxHTML(product, box);
+  }, [product, box]);
+
   const copyHtml = async () => {
-    if (!box?.html) return;
+    if (!displayHtml) return;
     try {
-      await navigator.clipboard.writeText(box.html);
+      await navigator.clipboard.writeText(displayHtml);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (e) {
       const ta = document.createElement("textarea");
-      ta.value = box.html;
+      ta.value = displayHtml;
       document.body.appendChild(ta);
       ta.select();
       try { document.execCommand("copy"); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (_) {}
@@ -2253,7 +2291,7 @@ function ReadyState({ box, onShowCode, showCode, onCopy, copied, onRetry }) {
           whiteSpace: "pre-wrap",
           wordBreak: "break-word"
         }}>
-          {box.html}
+          {displayHtml}
         </pre>
       )}
     </div>
