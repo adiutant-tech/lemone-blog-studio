@@ -1345,7 +1345,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.5 · "Nowy artykuł" czyści input + FAQ state
+                v2.6 · WYSIWYG edycja w tabie "Podgląd"
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1854,6 +1854,20 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
   const [editedHtml, setEditedHtml] = useState(null);
   const [copiedDisplay, setCopiedDisplay] = useState(false);
 
+  // Ref na div w tabie "Podgląd" — używamy go żeby ustawić innerHTML imperatywnie (z useEffect),
+  // zamiast przez React VDOM. ContentEditable + React = konflikt: jeśli React renderuje przez
+  // dangerouslySetInnerHTML przy każdej zmianie state, kursor gubi się w środku edycji.
+  // Trick: ustawiamy innerHTML TYLKO gdy zmienia się "źródłowy" HTML (auto-regeneracja parenta)
+  // albo wyniki walidacji linków (żeby highlighty się aktualizowały).
+  // NIE odpalamy useEffect po onInput — przez deps liczymy tylko [html, liveStatuses, tab].
+  const previewRef = useRef(null);
+
+  const handlePreviewInput = (e) => {
+    // Złap edycje user'a z contentEditable div'u — innerHTML reprezentuje aktualny stan DOM
+    // po wszystkich zmianach (wpisaniu, usunięciu, paste). Ustawiamy jako override.
+    setEditedHtml(e.currentTarget.innerHTML);
+  };
+
   // Gdy parent zregeneruje (zmieni props.html — np. po regeneracji boxa albo edycji TOC/FAQ),
   // resetujemy edycje, żeby nie utknąć na przestarzałej edytowanej wersji.
   useEffect(() => {
@@ -1879,6 +1893,23 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
     () => highlightBrokenLinks(displayHtml, links, liveStatuses),
     [displayHtml, links, liveStatuses]
   );
+
+  // Synchronizacja innerHTML w divie podglądu — TYLKO gdy zmienia się "źródło" (regeneracja przez parent,
+  // wynik walidacji linków, wejście w tab "Podgląd"). NIE robi tego przy każdym onInput, żeby kursor nie skakał.
+  // Jeśli zaktualizowalibyśmy innerHTML w odpowiedzi na każdą edycję, React/browser remountowałby DOM
+  // i tracilibyśmy pozycję kursora po każdym znaku.
+  useEffect(() => {
+    if (tab !== "preview") return;
+    if (!previewRef.current) return;
+    // Tylko jeśli to faktycznie INNA treść niż aktualnie w divie. Daje to nam dwie ochrony:
+    // (a) gdy useEffect odpala z powodu zmiany w liveStatuses ale highlight wyszedł identyczny — nie resetuj
+    // (b) gdy odpala z powodu remount tabu — wczytaj świeże previewHtml (z highlightami jeśli są)
+    if (previewRef.current.innerHTML !== previewHtml) {
+      previewRef.current.innerHTML = previewHtml;
+    }
+  }, [tab, html, liveStatuses]);
+  // ^ Krytyczne: tylko [tab, html, liveStatuses]. NIE [previewHtml, displayHtml, editedHtml] —
+  // bo wtedy onInput user'a (ustawiający editedHtml) byłby cofany przez useEffect, kursor skakałby.
 
   const runLiveCheck = async () => {
     if (links.length === 0) return;
@@ -1989,8 +2020,28 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
       </div>
 
       {tab === "preview" && (
-        <div className="scroll-thin" style={{ padding: 20, maxHeight: 600, overflow: "auto" }}>
-          <div dangerouslySetInnerHTML={{ __html: previewHtml }} />
+        <div className="scroll-thin" style={{ padding: 20, maxHeight: 600, overflow: "auto", background: "#fff" }}>
+          <div
+            ref={previewRef}
+            contentEditable
+            suppressContentEditableWarning
+            onInput={handlePreviewInput}
+            style={{
+              outline: "none",
+              minHeight: 100,
+              cursor: "text"
+            }}
+          />
+          {isEdited && (
+            <div style={{
+              position: "sticky", bottom: 0, marginTop: 12,
+              padding: "8px 14px", background: "#fff8e6",
+              border: "1px solid #f0e6c8", borderRadius: 6,
+              fontSize: 12, color: "#6b6b5b"
+            }}>
+              ✎ Zmiany ręczne aktywne — kopiuj/pobierz zawiera Twoje edycje
+            </div>
+          )}
         </div>
       )}
 
