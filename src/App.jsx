@@ -212,16 +212,24 @@ function getCategoriesForContainers(containers) {
 
 // === HTML PARSER ===
 const PRODUCT_URL_RE = /^\/p-.+\.html$/;
-// Wariant tolerancyjny — łapie też /cms/p-XXX.html (stary CMS edytor czasem dodaje prefix /cms/
-// do obrazków produktów mimo że link tekstowy do produktu go nie ma). Bez tego apka nie znajdowała
-// obrazka i generowała lemone-product bez lp-photo, a stary <p><a><img></a></p> zostawał luźno w treści.
-const PRODUCT_URL_TOLERANT_RE = /^(?:\/cms)?\/p-.+\.html$/;
+// Wariant tolerancyjny — łapie WSZYSTKIE warianty linków produktu jakie CMS może wkleić:
+//   /p-XXX.html                              (relative, kanoniczny)
+//   /cms/p-XXX.html                          (stary edytor, /cms/ prefix — v2.2)
+//   https://sklep.lemone.pl/p-XXX.html       (absolute URL, nowy CKEditor — v2.7)
+//   https://www.sklep.lemone.pl/p-XXX.html   (z www, na wszelki wypadek)
+// Bez tego apka nie grupowałaby linka tytułu i linka obrazka, generowała lemone-product
+// bez lp-photo i zostawiała luźny <p><a><img></a></p> w treści.
+const PRODUCT_URL_TOLERANT_RE = /^(?:https?:\/\/(?:www\.)?sklep\.lemone\.pl)?(?:\/cms)?\/p-.+\.html$/i;
 
-// Zwraca canoniczny URL produktu z dowolnego wariantu — strip prefixu /cms/.
-// Używane do porównań: czy link kieruje na ten sam produkt, niezależnie czy ma /cms/ czy nie.
+// Zwraca canoniczny URL produktu z dowolnego wariantu — strip:
+//   (1) absolute prefix https://sklep.lemone.pl (z/bez www)
+//   (2) /cms/ prefix
+// Wszystkie 3 warianty z PRODUCT_URL_TOLERANT_RE redukują się do /p-XXX.html.
 function canonicalProductUrl(href) {
   if (!href) return "";
-  return href.replace(/^\/cms\//, "/");
+  let canonical = href.replace(/^https?:\/\/(?:www\.)?sklep\.lemone\.pl/i, "");
+  canonical = canonical.replace(/^\/cms\//, "/");
+  return canonical;
 }
 
 function parseProducts(input) {
@@ -1345,7 +1353,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.6 · WYSIWYG edycja w tabie "Podgląd"
+                v2.7 · tolerancja absolute URL (https://sklep.lemone.pl/...) w linkach obrazków
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
