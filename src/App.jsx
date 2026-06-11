@@ -317,29 +317,18 @@ function extractTocItems(input) {
   const items = [];
   const seen = new Set();
 
-  // H2s in document order — these are the main article sections
+  // H2s w kolejności w dokumencie — to są główne sekcje artykułu.
+  // Headery wrapperów FAQ (z details>summary w środku) pomijamy, bo summary'es nie idą do głównego TOC.
+  // (v2.8) Wcześniej apka łapała też details>summary jako pozycje TOC, co powodowało że pytania
+  // ze starych sekcji FAQ wskakiwały do głównego spisu treści jako osobne sekcje. Niepożądane —
+  // TOC powinien zawierać tylko sekcje H2 najwyższego poziomu.
   const h2s = Array.from(doc.querySelectorAll("h2"));
   for (const h2 of h2s) {
     const text = h2.textContent.replace(/\s+/g, " ").trim();
     if (!text || seen.has(text)) continue;
-    // Skip the FAQ wrapper heading (its summaries become items themselves)
-    if (/najczęstsze pytania|faq/i.test(text)) continue;
-    items.push(text);
-    seen.add(text);
-  }
-
-  // FAQ summaries from <details><summary>
-  const summaries = Array.from(doc.querySelectorAll("details summary, summary"));
-  for (const sum of summaries) {
-    const clone = sum.cloneNode(true);
-    // Strip toggle indicators (typically last <span> with + / -)
-    const spans = clone.querySelectorAll("span");
-    for (const sp of spans) {
-      const t = sp.textContent.trim();
-      if (/^[+\-]$/.test(t)) sp.remove();
-    }
-    const text = clone.textContent.replace(/\s+/g, " ").trim();
-    if (!text || seen.has(text)) continue;
+    // Skip stare wrappery FAQ ("Najczęstsze pytania", "FAQ") — zostaną zastąpione przez
+    // generated FAQ section z buildFaqHTML, który dorzuca własną pozycję TOC z poprawnym id.
+    if (/najczęstsze pytania|^faq$/i.test(text)) continue;
     items.push(text);
     seen.add(text);
   }
@@ -419,7 +408,7 @@ function buildFaqHTML(items) {
   const schemaScript = `<script type="application/ld+json">${JSON.stringify(schema)}</script>`;
 
   return `<div style="margin:40px 0 30px;">
-    <h2 style="font-size:22px;color:#2d4a2d;margin-bottom:18px;">Q&amp;A - często zadawane pytania</h2>
+    <h2 id="sec-q-a-czesto-zadawane-pytania" style="font-size:22px;color:#2d4a2d;margin-bottom:18px;">Q&amp;A - często zadawane pytania</h2>
 ${cards}
 ${schemaScript}
 </div>`;
@@ -1353,7 +1342,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.7 · tolerancja absolute URL (https://sklep.lemone.pl/...) w linkach obrazków
+                v2.8 · TOC z H2 (bez FAQ pytań) + id na generated Q&amp;A
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
