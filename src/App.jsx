@@ -526,6 +526,30 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     h.setAttribute("style", existing + sep + "font-size:16px;font-weight:600;margin:0 0 6px;");
   }
 
+  // 4.6 SPŁASZCZENIE ZAGNIEŻDŻONYCH WRAPPERÓW PRODUKTÓW (v2.9).
+  // CMS Lemoné przy wklejaniu kolejnych produktów zagnieżdża każdy następny WEWNĄTRZ poprzedniego:
+  //   <div class="product"><div class="row"><div class="col-12">
+  //     <p>tytuł1</p><p>zdjęcie1</p>
+  //     <div class="product"><div class="row"><div class="col-12">  ← zagnieżdżenie!
+  //       <p>tytuł2</p>... <div class="product">...  ← jeszcze głębiej
+  // Po 10 produktach mamy 10+ poziomów zagnieżdżenia, indent narasta, kod nieczytelny w CMS.
+  // Spłaszczamy: każdy zagnieżdżony <div class="product"> przenosimy na poziom siostrzany
+  // (sibling) najbliższego zewnętrznego div.product. Iteracyjnie, aż nic się nie zmienia.
+  let flattenChanged = true;
+  let safetyCounter = 0;
+  while (flattenChanged && safetyCounter < 100) {
+    flattenChanged = false;
+    safetyCounter++;
+    const nestedProducts = Array.from(doc.querySelectorAll("div.product div.product"));
+    for (const inner of nestedProducts) {
+      const outer = inner.parentElement && inner.parentElement.closest("div.product");
+      if (!outer || outer === inner) continue;
+      // Przenieś inner na pozycję ZA outer (jako jego sibling)
+      outer.parentNode.insertBefore(inner, outer.nextSibling);
+      flattenChanged = true;
+    }
+  }
+
   // 5. Dla każdego produktu — znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
   // Strategia: znajdujemy <p> zawierający <a><img></a> (z linkiem do tego produktu, BĄDŹ z /cms/ prefix),
   // wycinamy ten <p> i wstawiamy zamiast niego pełną strukturę lemone-product.
@@ -654,7 +678,15 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     while (tmp.firstChild) doc.body.appendChild(tmp.firstChild);
   }
 
-  return doc.body.innerHTML;
+  // v2.9 — KAP MAKSYMALNEGO WCIĘCIA TEKSTOWEGO.
+  // Spłaszczenie zagnieżdżonych div.product (krok 4.6) zmienia STRUKTURĘ DOM, ale
+  // text nodes (newline + spacje) zachowane z oryginalnego HTML zostają. Output ma
+  // wtedy linie z 36+ spacjami wcięcia, nieczytelne w widoku Źródła w CMS.
+  // Whitespace między tagami w HTML nie ma znaczenia semantycznego (poza <pre>/<code>,
+  // których w boxach produktowych nie używamy), więc capujemy leading whitespace na
+  // 16 spacji = 4 poziomy 4-spacjowego indentu. To nie zmienia renderowania, tylko
+  // wygląd kodu w widoku Źródła CMS i edytora HTML.
+  return doc.body.innerHTML.replace(/^ {17,}/gm, '                ');
 }
 
 // === LINK VALIDATOR ===
@@ -941,8 +973,13 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 1000,
+      // effort=low — Anthropic rekomenduje dla "high-volume, simple tasks like classification,
+      // routing, or data extraction where speed matters". Bez tego Sonnet 4.6 ma default high
+      // z extended thinkingiem co dawałoby 3-4x dłuższy czas generacji per box. Dla strukturalnego
+      // JSON-a z 3 punktami w forWho/whyWorth/related to overkill.
+      output_config: { effort: "low" },
       messages: [{ role: "user", content: prompt }]
     })
   });
@@ -1033,8 +1070,11 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 2000,
+      // effort=low — patrz komentarz w generateBoxData. FAQ to też strukturalny JSON
+      // (6 par Q&A), nie wymaga extended thinkingu.
+      output_config: { effort: "low" },
       messages: [{ role: "user", content: prompt }]
     })
   });
@@ -1342,7 +1382,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v2.8 · TOC z H2 (bez FAQ pytań) + id na generated Q&amp;A
+                v3.0 · migracja na claude-sonnet-4-6 + effort=low (Sonnet 4 wycofany 15.06.2026)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
