@@ -862,15 +862,27 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     const allWrappers = doc.querySelectorAll("div.product");
     const lastWrapper = allWrappers[allWrappers.length - 1];
     if (lastWrapper) {
+      // v3.4.1: nazwa listy — heurystyka trójstopniowa:
+      //   1) H2 zawierający "TOP {n}" (klasyczny ranking)
+      //   2) H2 bezpośrednio POPRZEDZAJĄCY pierwszy blok produktowy w dokumencie
+      //      (to sekcja, w której produkty faktycznie występują)
+      //   3) neutralne "Polecane produkty"
+      // Poprzedni fallback ("ostatni H2 nie-FAQ") brał nagłówek sekcji poradnikowej
+      // typu "Jak wybrać SPF...", bo taka sekcja zwykle kończy artykuł. Zła heurystyka.
+      let listName = (tocItems && tocItems.find(t => /top \d+/i.test(t))) || "";
+      if (!listName) {
+        const firstWrapper = allWrappers[0];
+        let prev = firstWrapper ? firstWrapper.previousElementSibling : null;
+        while (prev) {
+          if (prev.tagName === "H2") { listName = prev.textContent.replace(/\s+/g, " ").trim(); break; }
+          prev = prev.previousElementSibling;
+        }
+      }
+      if (!listName) listName = "Polecane produkty";
       const itemList = {
         "@context": "https://schema.org",
         "@type": "ItemList",
-        // v3.3 (D4): nazwa listy — H2 z "TOP {n}", inaczej pierwszy H2 sekcji produktowej,
-        // inaczej neutralne "Polecane produkty" (nie "Ranking", bo artykuł-porównanie
-        // rankingiem nie jest). Redakcja może nadpisać w CMS.
-        "name": (tocItems && tocItems.find(t => /top \d+/i.test(t)))
-          || (tocItems && tocItems.filter(t => !/q&a|faq|pytania/i.test(t)).slice(-1)[0])
-          || "Polecane produkty",
+        "name": listName,
         "numberOfItems": productOrder.length,
         "itemListElement": productOrder.map((p, i) => {
           // v3.3 (D3/D4): pełna nazwa handlowa w ItemList — identyczna z H3 (bez numeru)
@@ -1673,7 +1685,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.4 · idempotencja regeneracji: przebudowa istniejących H3, wymiana ItemList, czyste alty
+                v3.4.1 · nazwa ItemList z H2 sekcji produktowej
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
