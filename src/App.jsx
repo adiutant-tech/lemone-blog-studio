@@ -380,7 +380,12 @@ function slugifyToId(text) {
 // Sonnet potrafi zwracać "—" (em-dash) i "–" (en-dash); artykuł używa "-". Normalizujemy
 // do "-" z otaczającymi spacjami, żeby widoczny tekst i JSON-LD były spójne z resztą treści.
 function normalizeDashes(s) {
-  return (s || "").replace(/\s*[—–]\s*/g, " - ");
+  return (s || "")
+    // v3.4.2: zakresy liczbowe NAJPIERW — "2–3", "2 — 3", "2 - 3" → "2-3" (dywiz bez spacji).
+    // Poprzednia wersja rozbijała zakresy na "2 - 3", bo reguła ogólna łapała też cyfry.
+    .replace(/(\d)\s*[—–-]\s*(\d)/g, "$1-$2")
+    // Reszta em/en dashy → " - "
+    .replace(/\s*[—–]\s*/g, " - ");
 }
 
 function buildFaqHTML(items) {
@@ -1357,6 +1362,10 @@ ZASADY ODPOWIEDZI
 - NIE rozpoczynaj od "Tak,"/"Nie," — rozbuduj odpowiedź żeby brzmiała redaktorsko
 - NIE wymyślaj statystyk, badań klinicznych ani konkretnych cyfr które nie są powszechną wiedzą
 - NIE polecaj konkretnych produktów (chyba że tylko ogólnie wspomnij kategorię)
+- Pisz NEUTRALNIE RODZAJOWO — nigdy "jesteś narażona/narażony"; używaj form typu "Twoja skóra jest narażona" albo "jesteśmy narażeni"
+- Zakresy liczbowe zapisuj dywizem bez spacji: "2-3 godziny", "20-30 minut"
+- Używaj wyłącznie zwykłego dywizu "-"; nigdy myślnika "—" ani półpauzy "–"
+- FAKTY FIZYCZNE: ekrany urządzeń elektronicznych NIE emitują promieniowania UV — emitują światło niebieskie (HEV); promieniowanie UVA przenika przez szyby okien, ale nie pochodzi z ekranów. Nie twierdź inaczej
 
 ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
 {"items":[{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}]}`;
@@ -1685,7 +1694,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.4.1 · nazwa ItemList z H2 sekcji produktowej
+                v3.4.2 · fix zakresow liczbowych (2-3) + guardrails FAQ (rodzaj neutralny, fakty o UV)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
