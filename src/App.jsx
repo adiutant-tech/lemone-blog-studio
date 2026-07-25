@@ -526,28 +526,52 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     h.setAttribute("style", existing + sep + "font-size:16px;font-weight:600;margin:0 0 6px;");
   }
 
-  // 4.6 SPŁASZCZENIE ZAGNIEŻDŻONYCH WRAPPERÓW PRODUKTÓW (v2.9).
+  // 4.6 USUNIĘCIE WRAPPERÓW .product/.row/.col-12 (v3.1, zastępuje spłaszczanie z v2.9).
   // CMS Lemoné przy wklejaniu kolejnych produktów zagnieżdża każdy następny WEWNĄTRZ poprzedniego:
   //   <div class="product"><div class="row"><div class="col-12">
-  //     <p>tytuł1</p><p>zdjęcie1</p>
-  //     <div class="product"><div class="row"><div class="col-12">  ← zagnieżdżenie!
-  //       <p>tytuł2</p>... <div class="product">...  ← jeszcze głębiej
-  // Po 10 produktach mamy 10+ poziomów zagnieżdżenia, indent narasta, kod nieczytelny w CMS.
-  // Spłaszczamy: każdy zagnieżdżony <div class="product"> przenosimy na poziom siostrzany
-  // (sibling) najbliższego zewnętrznego div.product. Iteracyjnie, aż nic się nie zmienia.
-  let flattenChanged = true;
-  let safetyCounter = 0;
-  while (flattenChanged && safetyCounter < 100) {
-    flattenChanged = false;
-    safetyCounter++;
-    const nestedProducts = Array.from(doc.querySelectorAll("div.product div.product"));
-    for (const inner of nestedProducts) {
-      const outer = inner.parentElement && inner.parentElement.closest("div.product");
-      if (!outer || outer === inner) continue;
-      // Przenieś inner na pozycję ZA outer (jako jego sibling)
-      outer.parentNode.insertBefore(inner, outer.nextSibling);
-      flattenChanged = true;
+  //     <p>tytuł1</p>... <div class="product">...  ← kaskada
+  // v2.9 przenosiło zagnieżdżone div.product na poziom sibling, ale miało lukę: treść artykułu
+  // (akapit zamykający, box "Zobacz również", FAQ), która siedziała w najgłębszym col-12 ZA
+  // ostatnim produktem, zostawała UWIĘZIONA wewnątrz karty ostatniego produktu.
+  // v3.1 idzie dalej: usuwa wrappery .product/.row/.col-12 CAŁKOWICIE (unwrap — zastąpienie
+  // wrappera jego dziećmi, z zachowaniem kolejności). To legacy Bootstrap grid:
+  //   - col-12 = pełna szerokość, czyli brak wrappera renderuje się identycznie
+  //   - spec lemone-product Szczepana nie wymaga tych wrapperów
+  //   - bez wrapperów kaskada zagnieżdżeń jest NIEMOŻLIWA z definicji
+  //   - treść końcowa artykułu ląduje w naturalnym liniowym porządku dokumentu
+  // Unwrap iteracyjny. Najpierw MARKUJEMY wrappery należące do struktur produktowych
+  // (div.row/div.col-12 łapiemy tylko WEWNĄTRZ div.product, żeby nie ruszyć ewentualnego
+  // grida użytego gdzie indziej w treści artykułu), potem unwrapujemy oznaczone.
+  const toUnwrap = new Set();
+  for (const el of doc.querySelectorAll("div.product")) toUnwrap.add(el);
+  for (const el of doc.querySelectorAll("div.product div.row, div.product div.col-12")) toUnwrap.add(el);
+  let unwrapCounter = 0;
+  for (const wrapper of toUnwrap) {
+    if (unwrapCounter++ > 500) break;
+    if (!wrapper.parentNode) continue; // już odłączony (nie powinno się zdarzyć, ale safety)
+    const parent = wrapper.parentNode;
+    while (wrapper.firstChild) {
+      parent.insertBefore(wrapper.firstChild, wrapper);
     }
+    parent.removeChild(wrapper);
+  }
+
+  // 4.7 CLEANUP ARTEFAKTÓW EDYTORA (v3.2, Defekt 3 z briefu audytowego).
+  // - <p>&nbsp;</p> i puste akapity-wypełniacze: usuwamy w całości
+  // - <span style="letter-spacing:0px;"> (artefakt wklejania z Worda): unwrap, treść zostaje
+  // - wiodące/końcowe &nbsp; w tekstach: normalizacja w tytułach/podtytułach robiona przy parsowaniu
+  for (const span of Array.from(doc.querySelectorAll('span[style*="letter-spacing"]'))) {
+    const st = span.getAttribute("style") || "";
+    // Tylko zerowe letter-spacing (0px, 0em, 0) — nie ruszamy celowych stylistycznych spacingów
+    if (!/letter-spacing:\s*0(px|em|rem)?\s*(;|$)/i.test(st)) continue;
+    const parent = span.parentNode;
+    while (span.firstChild) parent.insertBefore(span.firstChild, span);
+    parent.removeChild(span);
+  }
+  for (const p of Array.from(doc.querySelectorAll("p"))) {
+    // Pusty akapit = tekst po usunięciu &nbsp; i whitespace jest pusty ORAZ brak elementów (img, a itd.)
+    const textEmpty = p.textContent.replace(/[\s\u00a0]+/g, "") === "";
+    if (textEmpty && !p.querySelector("*")) p.remove();
   }
 
   // 5. Dla każdego produktu — znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
@@ -639,6 +663,154 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       // Tylko jeśli paragraf zawiera tylko obrazek (nie ruszamy paragrafów z tekstem!)
       if (p.textContent.replace(/\s+/g, "") !== "") continue;
       p.remove();
+    }
+  }
+
+  // 6. PRZEBUDOWA SEKCJI PRODUKTOWYCH NA FORMAT ZŁOTY (v3.2, Defekty 1-2 z briefu + wzorzec
+  // z artykułu który rankuje). Dla każdego produktu, w kolejności dokumentu:
+  //   (a) tytuł-paragraf (<p><a><strong>nazwa</strong></a>...) → <h3 id="prod-{slug}">
+  //       <a href="{url}">{nr}. {nazwa}</a></h3> + podtytuł jako <p><strong>{podtytuł}</strong></p>
+  //       BEZ drugiego linku (duplikacja linków rozmywa anchor text — brief, Defekt 2)
+  //   (b) segment [h3, podtytuł, lemone-product, kolejne <p> opisu] → opakowany w
+  //       <div class="product"><div class="row"><div class="col-12">...
+  //       Wrapper wstawiany ZAWSZE na poziomie root treści (sibling), nigdy w innym wrapperze —
+  //       kaskada niemożliwa, bo krok 4.6 wcześniej usunął wszystkie stare wrappery.
+  //   (c) po ostatnim wrapperze: JSON-LD ItemList (Defekt 4) z pozycją, nazwą i absolutnym URL.
+  const productOrder = [];
+  const headerByUrl = new Map();
+
+  // PASS 1: wszystkie tytuły-paragrafy → h3 + podtytuł. Robimy to dla WSZYSTKICH produktów
+  // ZANIM zaczniemy zbierać segmenty, bo inaczej zbieranie opisów produktu N połykałoby
+  // tytuł-paragraf produktu N+1 (który na tym etapie byłby jeszcze zwykłym <p>).
+  for (const product of products) {
+    const box = boxes[product.url];
+    if (!box || box.status !== "ready") continue;
+
+    const links = Array.from(doc.querySelectorAll("a[href]")).filter(a => {
+      const href = a.getAttribute("href") || "";
+      if (!PRODUCT_URL_TOLERANT_RE.test(href)) return false;
+      return canonicalProductUrl(href) === product.url;
+    });
+    let titleP = null;
+    for (const l of links) {
+      if (l.querySelector("img")) continue;
+      if (l.closest("div.lemone-product")) continue; // link w lp-photo/related nie jest tytułem
+      if (l.closest("table")) continue;               // tabela "Szybkie dopasowanie" nie jest tytułem
+      if (l.closest("h3")) continue;                  // już przebudowany (idempotencja)
+      const p = l.closest("p");
+      if (!p) continue;
+      titleP = p;
+      break;
+    }
+    if (!titleP) continue;
+
+    const nr = productOrder.length + 1;
+    productOrder.push(product);
+
+    // Slug z canonical URL: /p-dermaquest-essential-moisturizer-2496.html → dermaquest-essential-moisturizer
+    const slug = product.url
+      .replace(/^\/p-/, "")
+      .replace(/-\d+\.html$/i, "")
+      .replace(/\.html$/i, "");
+
+    const h3 = doc.createElement("h3");
+    h3.setAttribute("id", `prod-${slug}`);
+    const h3a = doc.createElement("a");
+    h3a.setAttribute("href", product.url);
+    h3a.textContent = `${nr}. ${product.name}`;
+    h3.appendChild(h3a);
+
+    titleP.replaceWith(h3);
+
+    // Podtytuł jako zwykły pogrubiony tekst (bez linku) — tylko jeśli produkt ma podtytuł
+    let lastHeaderEl = h3;
+    if (product.subtitle) {
+      const subP = doc.createElement("p");
+      subP.setAttribute("style", "text-align:left;");
+      const subStrong = doc.createElement("strong");
+      subStrong.textContent = product.subtitle.replace(/[\s\u00a0]+$/g, "").replace(/^[\s\u00a0]+/g, "");
+      subP.appendChild(subStrong);
+      h3.after(subP);
+      lastHeaderEl = subP;
+    }
+    headerByUrl.set(product.url, { h3, lastHeaderEl });
+  }
+
+  // PASS 2: zbieranie segmentów i wrapping. Teraz każdy tytuł jest już h3, więc pętla
+  // zbierająca opisy zatrzyma się na h3 następnego produktu (nie jest <p>).
+  for (const product of productOrder) {
+    const header = headerByUrl.get(product.url);
+    if (!header) continue;
+    const { h3, lastHeaderEl } = header;
+
+    const segment = [h3];
+    if (lastHeaderEl !== h3) segment.push(lastHeaderEl);
+    let cursor = lastHeaderEl.nextElementSibling;
+    let sawBox = false;
+    while (cursor) {
+      const tag = cursor.tagName;
+      const isBox = tag === "DIV" && cursor.classList.contains("lemone-product");
+      const isDescP = tag === "P";
+      if (isBox && !sawBox) {
+        segment.push(cursor);
+        sawBox = true;
+        cursor = cursor.nextElementSibling;
+        continue;
+      }
+      if (isDescP && sawBox) {
+        segment.push(cursor);
+        cursor = cursor.nextElementSibling;
+        continue;
+      }
+      break;
+    }
+
+    // Opakuj segment w div.product > div.row > div.col-12, wrapper wstawiony w miejscu h3
+    const wrapProduct = doc.createElement("div");
+    wrapProduct.setAttribute("class", "product");
+    const wrapRow = doc.createElement("div");
+    wrapRow.setAttribute("class", "row");
+    const wrapCol = doc.createElement("div");
+    wrapCol.setAttribute("class", "col-12");
+    wrapProduct.appendChild(wrapRow);
+    wrapRow.appendChild(wrapCol);
+
+    h3.parentNode.insertBefore(wrapProduct, h3);
+    for (const el of segment) wrapCol.appendChild(el);
+  }
+
+  // 6.5 JSON-LD ItemList po ostatnim wrapperze produktowym (Defekt 4).
+  // Absolutne URL-e (https://sklep.lemone.pl + canonical), kolejność = kolejność bloków w treści.
+  if (productOrder.length > 0) {
+    const allWrappers = doc.querySelectorAll("div.product");
+    const lastWrapper = allWrappers[allWrappers.length - 1];
+    if (lastWrapper) {
+      const itemList = {
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": (tocItems && tocItems.find(t => /top \d+/i.test(t))) || "Ranking produktów",
+        "numberOfItems": productOrder.length,
+        "itemListElement": productOrder.map((p, i) => ({
+          "@type": "ListItem",
+          "position": i + 1,
+          "name": p.name.replace(/[\s\u00a0]+$/g, ""),
+          "url": "https://sklep.lemone.pl" + p.url
+        }))
+      };
+      // Walidacja parserem przed zapisem (wymóg briefu): JSON.stringify + parse round-trip
+      let itemListJson = "";
+      try {
+        itemListJson = JSON.stringify(itemList);
+        JSON.parse(itemListJson);
+      } catch (e) {
+        itemListJson = "";
+      }
+      if (itemListJson) {
+        const script = doc.createElement("script");
+        script.setAttribute("type", "application/ld+json");
+        script.textContent = itemListJson;
+        lastWrapper.after(script);
+      }
     }
   }
 
@@ -1158,9 +1330,13 @@ ${whyLines.map(l => `            → ${escapeHtml(l)}`).join("<br>\n")}
 //   .lp-photo img { border-radius: 10px; }
 function buildBoxOnly(product, data) {
   const inner = buildBoxOnlyInner(data);
+  // Alt opisowy zgodnie z briefem: nazwa produktu + typ + pojemność (czyli nazwa + podtytuł).
+  const altText = product.subtitle
+    ? `${product.name} - ${product.subtitle.toLowerCase()}`
+    : product.name;
   const photoHtml = product.imageUrl
     ? `    <div class="lp-photo">
-        <a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}" style="border-radius:10px;"></a>
+        <a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(altText)}" style="border-radius:10px;"></a>
     </div>`
     : "";
 
@@ -1382,7 +1558,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.0 · migracja na claude-sonnet-4-6 + effort=low (Sonnet 4 wycofany 15.06.2026)
+                v3.2 · format złoty: H3 z numeracją, wrappery odbudowane płasko, ItemList JSON-LD, cleanup artefaktów
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
