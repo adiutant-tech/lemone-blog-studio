@@ -376,8 +376,16 @@ function slugifyToId(text) {
 // Renders FAQ section as styled cards (no accordion — CMS sanitization strips
 // interactive `<details>` styling). Each Q&A is a self-contained div with inline styles.
 // Plus FAQPage JSON-LD schema embedded as <script> for SEO (Google rich results).
+// v3.3 (B4 z briefu): ujednolicenie myślników w treściach generowanych przez model.
+// Sonnet potrafi zwracać "—" (em-dash) i "–" (en-dash); artykuł używa "-". Normalizujemy
+// do "-" z otaczającymi spacjami, żeby widoczny tekst i JSON-LD były spójne z resztą treści.
+function normalizeDashes(s) {
+  return (s || "").replace(/\s*[—–]\s*/g, " - ");
+}
+
 function buildFaqHTML(items) {
-  const filtered = (items || []).filter(it => it && it.q && it.a);
+  const filtered = (items || []).filter(it => it && it.q && it.a)
+    .map(it => ({ q: normalizeDashes(it.q), a: normalizeDashes(it.a) }));
   if (filtered.length === 0) return "";
 
   const cards = filtered.map(it => {
@@ -544,7 +552,11 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   // grida użytego gdzie indziej w treści artykułu), potem unwrapujemy oznaczone.
   const toUnwrap = new Set();
   for (const el of doc.querySelectorAll("div.product")) toUnwrap.add(el);
-  for (const el of doc.querySelectorAll("div.product div.row, div.product div.col-12")) toUnwrap.add(el);
+  // v3.3 (D1 z briefu): unwrapujemy WSZYSTKIE div.row/div.col-12, nie tylko te wewnątrz
+  // div.product. Audyt wykrył samodzielny wrapper row>col-12 obejmujący środek artykułu
+  // (produkty + nagłówki H2), który przechodził nietknięty. Krok 6 odbudowuje wrappery
+  // produktowe w poprawnej formie, więc żaden potrzebny wrapper nie ginie.
+  for (const el of doc.querySelectorAll("div.row, div.col-12")) toUnwrap.add(el);
   let unwrapCounter = 0;
   for (const wrapper of toUnwrap) {
     if (unwrapCounter++ > 500) break;
@@ -572,6 +584,56 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     // Pusty akapit = tekst po usunięciu &nbsp; i whitespace jest pusty ORAZ brak elementów (img, a itd.)
     const textEmpty = p.textContent.replace(/[\s\u00a0]+/g, "") === "";
     if (textEmpty && !p.querySelector("*")) p.remove();
+  }
+
+  // 4.8 ROZSZERZONY CLEANUP ARTEFAKTÓW (v3.3, punkty C1-C5 z briefu poprawek).
+  // (C1) wiodące <br> i &nbsp; na początkach akapitów po nagłówkach
+  // (C5) końcowe <br> i <br>&nbsp; w akapitach i elementach list
+  // (C3) trailing &nbsp; w nagłówkach i na końcach akapitów
+  // (C4) wtrącone &nbsp; po myślnikach list zamieniamy na zwykłą spację
+  // (C2) gołe węzły tekstowe &nbsp; wiszące między blokami
+  const trimTargets = Array.from(doc.querySelectorAll("p, li, h1, h2, h3, h4"));
+  for (const el of trimTargets) {
+    // Wiodące: usuwaj <br> i whitespace/&nbsp; z przodu aż do pierwszej treści
+    while (el.firstChild) {
+      const n = el.firstChild;
+      if (n.nodeType === 1 && n.tagName === "BR") { n.remove(); continue; }
+      if (n.nodeType === 3) {
+        n.textContent = n.textContent.replace(/^[\s\u00a0]+/, "");
+        if (n.textContent === "") { n.remove(); continue; }
+      }
+      break;
+    }
+    // Końcowe: usuwaj <br> i whitespace/&nbsp; z tyłu
+    while (el.lastChild) {
+      const n = el.lastChild;
+      if (n.nodeType === 1 && n.tagName === "BR") { n.remove(); continue; }
+      if (n.nodeType === 3) {
+        n.textContent = n.textContent.replace(/[\s\u00a0]+$/, "");
+        if (n.textContent === "") { n.remove(); continue; }
+      }
+      break;
+    }
+  }
+  // (C4) &nbsp; wewnątrz tekstu (poza <pre>) → zwykła spacja; podwójne spacje → pojedyncza.
+  // (C2) text node zawierający TYLKO whitespace/&nbsp; jako bezpośrednie dziecko kontenera
+  // blokowego (body/div) → usuwamy w całości.
+  const walker = doc.createTreeWalker(doc.body, 4 /* NodeFilter.SHOW_TEXT */);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const t of textNodes) {
+    const parentTag = t.parentNode && t.parentNode.tagName;
+    if (parentTag === "PRE" || parentTag === "CODE" || parentTag === "SCRIPT" || parentTag === "STYLE") continue;
+    const onlyWs = t.textContent.replace(/[\s\u00a0]+/g, "") === "";
+    if (onlyWs && (parentTag === "BODY" || parentTag === "DIV")) {
+      // Goły węzeł między blokami — jeśli zawiera &nbsp;, to artefakt; czysty whitespace
+      // (indentacja HTML) zostaje bo jest nieznaczący i utrzymuje czytelność źródła
+      if (/\u00a0/.test(t.textContent)) t.remove();
+      continue;
+    }
+    if (/\u00a0/.test(t.textContent)) {
+      t.textContent = t.textContent.replace(/\u00a0/g, " ").replace(/ {2,}/g, " ");
+    }
   }
 
   // 5. Dla każdego produktu — znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
@@ -717,23 +779,20 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     h3.setAttribute("id", `prod-${slug}`);
     const h3a = doc.createElement("a");
     h3a.setAttribute("href", product.url);
-    h3a.textContent = `${nr}. ${product.name}`;
+    // v3.3 (D3 z briefu): H3 zawiera pełną nazwę handlową — marka + nazwa + krótki opis
+    // + pojemność. Opis i pojemność pochodzą z podtytułu. Osobny akapit podtytułu znika,
+    // bo dublowałby treść H3.
+    const cleanSubtitle = (product.subtitle || "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
+    const fullName = cleanSubtitle
+      ? `${product.name} - ${cleanSubtitle.charAt(0).toLowerCase()}${cleanSubtitle.slice(1)}`
+      : product.name;
+    h3a.textContent = `${nr}. ${fullName}`;
     h3.appendChild(h3a);
 
     titleP.replaceWith(h3);
 
-    // Podtytuł jako zwykły pogrubiony tekst (bez linku) — tylko jeśli produkt ma podtytuł
-    let lastHeaderEl = h3;
-    if (product.subtitle) {
-      const subP = doc.createElement("p");
-      subP.setAttribute("style", "text-align:left;");
-      const subStrong = doc.createElement("strong");
-      subStrong.textContent = product.subtitle.replace(/[\s\u00a0]+$/g, "").replace(/^[\s\u00a0]+/g, "");
-      subP.appendChild(subStrong);
-      h3.after(subP);
-      lastHeaderEl = subP;
-    }
-    headerByUrl.set(product.url, { h3, lastHeaderEl });
+    const lastHeaderEl = h3;
+    headerByUrl.set(product.url, { h3, lastHeaderEl, fullName });
   }
 
   // PASS 2: zbieranie segmentów i wrapping. Teraz każdy tytuł jest już h3, więc pętla
@@ -788,14 +847,24 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       const itemList = {
         "@context": "https://schema.org",
         "@type": "ItemList",
-        "name": (tocItems && tocItems.find(t => /top \d+/i.test(t))) || "Ranking produktów",
+        // v3.3 (D4): nazwa listy — H2 z "TOP {n}", inaczej pierwszy H2 sekcji produktowej,
+        // inaczej neutralne "Polecane produkty" (nie "Ranking", bo artykuł-porównanie
+        // rankingiem nie jest). Redakcja może nadpisać w CMS.
+        "name": (tocItems && tocItems.find(t => /top \d+/i.test(t)))
+          || (tocItems && tocItems.filter(t => !/q&a|faq|pytania/i.test(t)).slice(-1)[0])
+          || "Polecane produkty",
         "numberOfItems": productOrder.length,
-        "itemListElement": productOrder.map((p, i) => ({
-          "@type": "ListItem",
-          "position": i + 1,
-          "name": p.name.replace(/[\s\u00a0]+$/g, ""),
-          "url": "https://sklep.lemone.pl" + p.url
-        }))
+        "itemListElement": productOrder.map((p, i) => {
+          // v3.3 (D3/D4): pełna nazwa handlowa w ItemList — identyczna z H3 (bez numeru)
+          const header = headerByUrl.get(p.url);
+          const itemName = (header && header.fullName) || p.name;
+          return {
+            "@type": "ListItem",
+            "position": i + 1,
+            "name": itemName.replace(/[\s\u00a0]+$/g, ""),
+            "url": "https://sklep.lemone.pl" + p.url
+          };
+        })
       };
       // Walidacja parserem przed zapisem (wymóg briefu): JSON.stringify + parse round-trip
       let itemListJson = "";
@@ -832,6 +901,12 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       el.remove();
       el = next;
     }
+    // v3.3 (D2 z briefu): po wyczyszczeniu zawartości rodzic-wrapper (np.
+    // <div style="margin:40px 0 30px;">) zostaje pusty — usuwamy go, żeby nie wisiał
+    // przed nową sekcją Q&A jako martwy element.
+    if (parent.tagName === "DIV" && parent.textContent.replace(/[\s\u00a0]+/g, "") === "" && !parent.querySelector("img, script")) {
+      parent.remove();
+    }
   }
   // Też skasuj stare FAQPage JSON-LD schema (zostawiamy inne JSON-LD jak Article)
   const oldFaqSchemas = Array.from(doc.querySelectorAll('script[type="application/ld+json"]')).filter(s => {
@@ -848,6 +923,23 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     const tmp = doc.createElement("div");
     tmp.innerHTML = faqHtml;
     while (tmp.firstChild) doc.body.appendChild(tmp.firstChild);
+  }
+
+  // v3.3 (D2 z briefu) — GLOBALNY SWEEP PUSTYCH DIVÓW.
+  // Puste divy-wypełniacze (np. <div style="margin:40px 0 30px;"></div>) zostające po
+  // ręcznych edycjach w CMS albo po usunięciu treści: usuwamy każdy div bez tekstu,
+  // bez obrazków i bez skryptów. Iteracyjnie, bo usunięcie dziecka może opróżnić rodzica.
+  let sweepPass = 0;
+  while (sweepPass < 10) {
+    sweepPass++;
+    let removed = 0;
+    for (const d of Array.from(doc.querySelectorAll("div"))) {
+      if (d.textContent.replace(/[\s\u00a0]+/g, "") !== "") continue;
+      if (d.querySelector("img, script, iframe, video, hr, table")) continue;
+      d.remove();
+      removed++;
+    }
+    if (removed === 0) break;
   }
 
   // v2.9 — KAP MAKSYMALNEGO WCIĘCIA TEKSTOWEGO.
@@ -1294,8 +1386,8 @@ const escapeHtml = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
 // (łamie spec Szczepana "zero inline"), do usunięcia gdy Szczepan dorzuci do motywu:
 //   .lp-info p { font-size: 14px; }
 function buildBoxOnlyInner(data) {
-  const forWhoLines = (data.forWho || []).map(l => l.trim()).filter(Boolean);
-  const whyLines = (data.whyWorth || []).map(l => l.trim()).filter(Boolean);
+  const forWhoLines = (data.forWho || []).map(l => normalizeDashes(l.trim())).filter(Boolean);
+  const whyLines = (data.whyWorth || []).map(l => normalizeDashes(l.trim())).filter(Boolean);
   const related = data.related || [];
 
   const P_STYLE = ' style="font-size:14px;"'; // jedyne miejsce do podmiany wartości
@@ -1558,7 +1650,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.2 · format złoty: H3 z numeracją, wrappery odbudowane płasko, ItemList JSON-LD, cleanup artefaktów
+                v3.3 · poprawki z briefu: artefakty br/nbsp, samodzielne wrappery, pełne H3, ItemList, myślniki
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
