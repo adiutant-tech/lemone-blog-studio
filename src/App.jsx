@@ -753,18 +753,23 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       if (!PRODUCT_URL_TOLERANT_RE.test(href)) return false;
       return canonicalProductUrl(href) === product.url;
     });
-    let titleP = null;
+    let titleEl = null;
     for (const l of links) {
       if (l.querySelector("img")) continue;
       if (l.closest("div.lemone-product")) continue; // link w lp-photo/related nie jest tytułem
       if (l.closest("table")) continue;               // tabela "Szybkie dopasowanie" nie jest tytułem
-      if (l.closest("h3")) continue;                  // już przebudowany (idempotencja)
+      // v3.4 FIX IDEMPOTENCJI: link w istniejącym H3 to tytuł z POPRZEDNIEJ generacji Studio.
+      // v3.3 pomijała go ("już przebudowany"), przez co przy regeneracji własnego outputu
+      // krok 4.6 rozbierał wrappery, a krok 6 ich nie odbudowywał (produkt niewykryty).
+      // Teraz istniejący H3 traktujemy jak tytuł do przebudowy: renumeracja + wrapping.
+      const h3host = l.closest("h3");
+      if (h3host) { titleEl = h3host; break; }
       const p = l.closest("p");
       if (!p) continue;
-      titleP = p;
+      titleEl = p;
       break;
     }
-    if (!titleP) continue;
+    if (!titleEl) continue;
 
     const nr = productOrder.length + 1;
     productOrder.push(product);
@@ -782,14 +787,18 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     // v3.3 (D3 z briefu): H3 zawiera pełną nazwę handlową — marka + nazwa + krótki opis
     // + pojemność. Opis i pojemność pochodzą z podtytułu. Osobny akapit podtytułu znika,
     // bo dublowałby treść H3.
+    // v3.4: strip starego numeru z nazwy ("1. Nazwa" → "Nazwa"). Przy regeneracji własnego
+    // outputu parseProducts bierze nazwę z tekstu linku H3, który zawiera już numerację;
+    // bez strippingu numer by się dublował ("1. 1. Nazwa") i przeciekał do altów i ItemList.
+    const baseName = (product.name || "").replace(/^\s*\d+[.)]\s*/, "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
     const cleanSubtitle = (product.subtitle || "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
     const fullName = cleanSubtitle
-      ? `${product.name} - ${cleanSubtitle.charAt(0).toLowerCase()}${cleanSubtitle.slice(1)}`
-      : product.name;
+      ? `${baseName} - ${cleanSubtitle.charAt(0).toLowerCase()}${cleanSubtitle.slice(1)}`
+      : baseName;
     h3a.textContent = `${nr}. ${fullName}`;
     h3.appendChild(h3a);
 
-    titleP.replaceWith(h3);
+    titleEl.replaceWith(h3);
 
     const lastHeaderEl = h3;
     headerByUrl.set(product.url, { h3, lastHeaderEl, fullName });
@@ -840,6 +849,15 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
 
   // 6.5 JSON-LD ItemList po ostatnim wrapperze produktowym (Defekt 4).
   // Absolutne URL-e (https://sklep.lemone.pl + canonical), kolejność = kolejność bloków w treści.
+  // v3.4: najpierw USUŃ stare ItemListy z poprzednich generacji (analogicznie do FAQPage
+  // w kroku 7). Bez tego przy regeneracji stary skrypt ("Ranking produktów", nazwy bez
+  // marek) zostawał w treści zamiast nowego lub obok niego.
+  for (const s of Array.from(doc.querySelectorAll('script[type="application/ld+json"]'))) {
+    try {
+      const j = JSON.parse(s.textContent || "{}");
+      if (j["@type"] === "ItemList") s.remove();
+    } catch (_) {}
+  }
   if (productOrder.length > 0) {
     const allWrappers = doc.querySelectorAll("div.product");
     const lastWrapper = allWrappers[allWrappers.length - 1];
@@ -950,7 +968,9 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   // których w boxach produktowych nie używamy), więc capujemy leading whitespace na
   // 16 spacji = 4 poziomy 4-spacjowego indentu. To nie zmienia renderowania, tylko
   // wygląd kodu w widoku Źródła CMS i edytora HTML.
-  return doc.body.innerHTML.replace(/^ {17,}/gm, '                ');
+  return doc.body.innerHTML.replace(/^ {17,}/gm, '                ')
+    .replace(/^[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 // === LINK VALIDATOR ===
@@ -1423,9 +1443,12 @@ ${whyLines.map(l => `            → ${escapeHtml(l)}`).join("<br>\n")}
 function buildBoxOnly(product, data) {
   const inner = buildBoxOnlyInner(data);
   // Alt opisowy zgodnie z briefem: nazwa produktu + typ + pojemność (czyli nazwa + podtytuł).
+  // v3.4: strip numeracji z nazwy — przy regeneracji własnego outputu nazwa z H3 zawiera
+  // "{nr}. ", który nie może trafić do alta.
+  const altBase = (product.name || "").replace(/^\s*\d+[.)]\s*/, "");
   const altText = product.subtitle
-    ? `${product.name} - ${product.subtitle.toLowerCase()}`
-    : product.name;
+    ? `${altBase} - ${product.subtitle.toLowerCase()}`
+    : altBase;
   const photoHtml = product.imageUrl
     ? `    <div class="lp-photo">
         <a href="${escapeHtml(product.url)}"><img src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(altText)}" style="border-radius:10px;"></a>
@@ -1650,7 +1673,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.3 · poprawki z briefu: artefakty br/nbsp, samodzielne wrappery, pełne H3, ItemList, myślniki
+                v3.4 · idempotencja regeneracji: przebudowa istniejących H3, wymiana ItemList, czyste alty
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
