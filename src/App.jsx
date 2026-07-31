@@ -388,6 +388,17 @@ function normalizeDashes(s) {
     .replace(/\s*[—–]\s*/g, " - ");
 }
 
+// v3.5: JSON dla dedykowanego pola "FAQ (dane strukturalne)" w CMS Lemoné.
+// Format wymagany przez pole: [{"question": "...", "answer": "..."}].
+// CMS renderuje z tego sekcję FAQ na stronie i generuje FAQPage JSON-LD samodzielnie,
+// więc Studio nie wstawia już żadnego FAQ do treści artykułu.
+function buildFaqCmsJson(items) {
+  const filtered = (items || []).filter(it => it && it.q && it.a)
+    .map(it => ({ question: normalizeDashes(it.q).trim(), answer: normalizeDashes(it.a).trim() }));
+  if (filtered.length === 0) return "";
+  return JSON.stringify(filtered, null, 2);
+}
+
 function buildFaqHTML(items) {
   const filtered = (items || []).filter(it => it && it.q && it.a)
     .map(it => ({ q: normalizeDashes(it.q), a: normalizeDashes(it.a) }));
@@ -952,13 +963,14 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   });
   for (const s of oldFaqSchemas) s.remove();
 
-  // Wstaw nowy FAQ jeśli mamy treść
-  const faqHtml = buildFaqHTML(faqItems);
-  if (faqHtml) {
-    const tmp = doc.createElement("div");
-    tmp.innerHTML = faqHtml;
-    while (tmp.firstChild) doc.body.appendChild(tmp.firstChild);
-  }
+  // v3.5: NIE wstawiamy już sekcji FAQ ani FAQPage do treści artykułu.
+  // CMS Lemoné ma dedykowane pole "FAQ (dane strukturalne)" przyjmujące JSON
+  // [{"question","answer"}]; sanitizer edytora usuwa bloki <script type="application/ld+json">
+  // z treści wpisu przy zapisie, a sekcję FAQ i schema FAQPage renderuje sam CMS
+  // (w miejscu znacznika [faq] w treści, a bez znacznika — na końcu wpisu).
+  // Cleanup starych sekcji i schem powyżej ZOSTAJE: wejściowe artykuły z poprzednich
+  // generacji nadal zawierają FAQ w treści i trzeba je stamtąd usuwać.
+  // JSON dla pola CMS generuje buildFaqCmsJson(), kopiowany osobnym przyciskiem w UI.
 
   // v3.3 (D2 z briefu) — GLOBALNY SWEEP PUSTYCH DIVÓW.
   // Puste divy-wypełniacze (np. <div style="margin:40px 0 30px;"></div>) zostające po
@@ -1694,7 +1706,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.4.2 · fix zakresow liczbowych (2-3) + guardrails FAQ (rodzaj neutralny, fakty o UV)
+                v3.5 · FAQ jako JSON do pola CMS; artykuł bez sekcji Q&amp;A i bez FAQPage
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -2044,6 +2056,7 @@ function TocCard({ items, setItems }) {
 
 function FaqCard({ items, setItems, status, error, onRegenerate }) {
   const [copied, setCopied] = useState(false);
+  const [copiedJson, setCopiedJson] = useState(false);
 
   const updateQ = (i, v) => setItems(items.map((it, idx) => idx === i ? { ...it, q: v } : it));
   const updateA = (i, v) => setItems(items.map((it, idx) => idx === i ? { ...it, a: v } : it));
@@ -2051,22 +2064,27 @@ function FaqCard({ items, setItems, status, error, onRegenerate }) {
   const addItem = () => setItems([...items, { q: "", a: "" }]);
 
   const html = useMemo(() => buildFaqHTML(items), [items]);
+  // v3.5: JSON dla pola "FAQ (dane strukturalne)" w CMS — to jest teraz GŁÓWNY output FAQ.
+  const cmsJson = useMemo(() => buildFaqCmsJson(items), [items]);
 
-  const copyFaq = async () => {
-    if (!html) return;
+  const copyText = async (text, setFlag) => {
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(html);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      await navigator.clipboard.writeText(text);
+      setFlag(true);
+      setTimeout(() => setFlag(false), 1500);
     } catch (e) {
       const ta = document.createElement("textarea");
-      ta.value = html;
+      ta.value = text;
       document.body.appendChild(ta);
       ta.select();
-      try { document.execCommand("copy"); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (_) {}
+      try { document.execCommand("copy"); setFlag(true); setTimeout(() => setFlag(false), 1500); } catch (_) {}
       document.body.removeChild(ta);
     }
   };
+
+  const copyFaq = () => copyText(html, setCopied);
+  const copyJson = () => copyText(cmsJson, setCopiedJson);
 
   // Loading state — boxy jeszcze się generują, FAQ czeka albo właśnie się generuje
   if (status === "loading") {
@@ -2119,10 +2137,19 @@ function FaqCard({ items, setItems, status, error, onRegenerate }) {
         </button>
         <button
           onClick={copyFaq}
-          style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12.5, background: copied ? "#5b8c5a" : "#2d4a2d" }}
+          style={{ ...btnSecondary, padding: "7px 12px", fontSize: 12 }}
+          title="Stary format: sekcja FAQ jako HTML do wklejenia w treść (nieużywany po zmianie CMS)"
         >
           {copied ? <Check size={13} /> : <Copy size={13} />}
-          {copied ? "Skopiowano" : "Kopiuj tylko FAQ"}
+          {copied ? "Skopiowano" : "HTML (stary format)"}
+        </button>
+        <button
+          onClick={copyJson}
+          style={{ ...btnPrimary, padding: "7px 12px", fontSize: 12.5, background: copiedJson ? "#5b8c5a" : "#2d4a2d" }}
+          title={'JSON do pola "FAQ (dane strukturalne)" w CMS. Wklej w polu pod treścią wpisu; sekcja i FAQPage wygenerują się po stronie CMS.'}
+        >
+          {copiedJson ? <Check size={13} /> : <Copy size={13} />}
+          {copiedJson ? "Skopiowano" : "Kopiuj JSON dla CMS"}
         </button>
       </div>
 
