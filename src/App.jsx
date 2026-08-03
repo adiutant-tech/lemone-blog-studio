@@ -261,11 +261,26 @@ function parseProducts(input) {
     let subtitle = "";
     let imageUrl = "";
 
-    for (const l of links) {
-      const strong = l.querySelector("strong");
-      if (strong) {
-        const t = strong.textContent.replace(/\s+/g, " ").trim();
-        if (t.length > name.length) name = t;
+    // v3.7 BUG-FIX: format dwuliniowy to DWA osobne linki <strong> w tym samym akapicie
+    // tytułowym — pierwszy to nazwa handlowa (marka + nazwa), drugi to polski podtytuł
+    // z pojemnością. Decyduje KOLEJNOŚĆ W DOM, nie długość tekstu.
+    // Do v3.6 obowiązywało "najdłuższy <strong> wygrywa", co podmieniało nazwę na podtytuł,
+    // gdy podtytuł był choćby o jeden znak dłuższy, np.:
+    //   "RVB LAB Microbioma Daily Protection Cream SPF 50"  (47 zn.)
+    //   "Lekki pre-probiotyczny krem ochronny SPF 50 50 ml" (48 zn.)  ← wygrywał
+    // Skutek: w H3, alt i ItemList zamiast nazwy produktu lądował polski opis.
+    // Przy okazji podtytuł był gubiony całkowicie, bo szukano go WYŁĄCZNIE w span.subtitle,
+    // który istnieje tylko w outputcie poprzedniej generacji Studio, a nie w świeżym wklejeniu z CMS.
+    const strongLinks = links.filter(l => !l.querySelector("img") && l.querySelector("strong"));
+    if (strongLinks.length > 0) {
+      name = strongLinks[0].querySelector("strong").textContent.replace(/\s+/g, " ").trim();
+      // Podtytuł bierzemy tylko z TEGO SAMEGO akapitu tytułowego — inaczej złapalibyśmy
+      // pogrubiony link do produktu z treści artykułu.
+      const titleP = strongLinks[0].closest("p");
+      for (const l of strongLinks.slice(1)) {
+        if (titleP && l.closest("p") !== titleP) continue;
+        const t = l.querySelector("strong").textContent.replace(/\s+/g, " ").trim();
+        if (t && t !== name) { subtitle = t; break; }
       }
     }
     if (!name) {
@@ -276,11 +291,14 @@ function parseProducts(input) {
     }
     if (!name) continue;
 
-    for (const l of links) {
-      const sub = l.querySelector(".subtitle, span.subtitle");
-      if (sub) {
-        const t = sub.textContent.replace(/\s+/g, " ").trim();
-        if (t && t !== name) { subtitle = t; break; }
+    // Fallback dla regeneracji własnego outputu (H3 + <p><span class="subtitle">).
+    if (!subtitle) {
+      for (const l of links) {
+        const sub = l.querySelector(".subtitle, span.subtitle");
+        if (sub) {
+          const t = sub.textContent.replace(/\s+/g, " ").trim();
+          if (t && t !== name) { subtitle = t; break; }
+        }
       }
     }
 
@@ -808,10 +826,18 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     // v3.6: rozklejenie nazw scalonych przez v3.3-v3.5 ("Nazwa - opis pojemność" w jednym H3).
     // Przy regeneracji artykułu z tamtych wersji podtytułu nie ma osobno, siedzi w nazwie
     // po " - ". Dzielimy na pierwszym " - ", żeby wrócić do formatu dwuliniowego.
-    if (!cleanSubtitle && baseName.includes(" - ")) {
-      const idx = baseName.indexOf(" - ");
-      cleanSubtitle = baseName.slice(idx + 3).trim();
-      baseName = baseName.slice(0, idx).trim();
+    // v3.7 BUG-FIX: dzielimy TYLKO wtedy, gdy fragment po " - " zaczyna się MAŁĄ literą.
+    // Dokładnie taki kształt produkowały v3.3-v3.5 (fullName = "Nazwa - podtytuł z małej litery",
+    // patrz kilka linii niżej). Nazwy handlowe z myślnikiem w środku mają po " - " WIELKĄ literę
+    // i nie wolno ich ciąć — v3.6 robiła z
+    //   "MedMelano Calm Me! Soothing And Anti - Redness Post - Treatment Cream"
+    // dwie części: H3 "MedMelano Calm Me! Soothing And Anti" + podtytuł "Redness Post - Treatment Cream".
+    if (!cleanSubtitle) {
+      const merged = baseName.match(/^(.*?) - (\p{Ll}.*)$/u);
+      if (merged) {
+        baseName = merged[1].trim();
+        cleanSubtitle = merged[2].trim();
+      }
     }
     // v3.6 (powrót do formatu dwuliniowego, decyzja Roberta 2026-08-02):
     // H3 = TYLKO marka + nazwa handlowa (z numeracją). Opis + pojemność idą do OSOBNEGO
@@ -1511,8 +1537,10 @@ function buildBoxOnly(product, data) {
   // v3.4: strip numeracji z nazwy — przy regeneracji własnego outputu nazwa z H3 zawiera
   // "{nr}. ", który nie może trafić do alta.
   const altBase = (product.name || "").replace(/^\s*\d+[.)]\s*/, "");
+  // v3.7: małą literą tylko PIERWSZY znak podtytułu (spójnie z fullName w renderProducts).
+  // Wcześniejsze .toLowerCase() na całości psuło alt: "...krem ochronny spf 50 50 ml".
   const altText = product.subtitle
-    ? `${altBase} - ${product.subtitle.toLowerCase()}`
+    ? `${altBase} - ${product.subtitle.charAt(0).toLowerCase()}${product.subtitle.slice(1)}`
     : altBase;
   const photoHtml = product.imageUrl
     ? `    <div class="lp-photo">
@@ -1738,7 +1766,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.6 · format dwuliniowy: H3 marka+nazwa, opis w osobnej linii
+                v3.7 · format dwuliniowy + fix nazw produktów (kolejność DOM, myślnik w nazwie)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
