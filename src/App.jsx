@@ -800,23 +800,55 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     h3.setAttribute("id", `prod-${slug}`);
     const h3a = doc.createElement("a");
     h3a.setAttribute("href", product.url);
-    // v3.3 (D3 z briefu): H3 zawiera pełną nazwę handlową — marka + nazwa + krótki opis
-    // + pojemność. Opis i pojemność pochodzą z podtytułu. Osobny akapit podtytułu znika,
-    // bo dublowałby treść H3.
-    // v3.4: strip starego numeru z nazwy ("1. Nazwa" → "Nazwa"). Przy regeneracji własnego
-    // outputu parseProducts bierze nazwę z tekstu linku H3, który zawiera już numerację;
-    // bez strippingu numer by się dublował ("1. 1. Nazwa") i przeciekał do altów i ItemList.
-    const baseName = (product.name || "").replace(/^\s*\d+[.)]\s*/, "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
-    const cleanSubtitle = (product.subtitle || "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
+    // v3.4: strip starego numeru z nazwy ("1. Nazwa" → "Nazwa") — przy regeneracji własnego
+    // outputu nazwa z linku H3 zawiera już numerację; bez strippingu numer by się dublował.
+    const baseName0 = (product.name || "").replace(/^\s*\d+[.)]\s*/, "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
+    let cleanSubtitle = (product.subtitle || "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
+    let baseName = baseName0;
+    // v3.6: rozklejenie nazw scalonych przez v3.3-v3.5 ("Nazwa - opis pojemność" w jednym H3).
+    // Przy regeneracji artykułu z tamtych wersji podtytułu nie ma osobno, siedzi w nazwie
+    // po " - ". Dzielimy na pierwszym " - ", żeby wrócić do formatu dwuliniowego.
+    if (!cleanSubtitle && baseName.includes(" - ")) {
+      const idx = baseName.indexOf(" - ");
+      cleanSubtitle = baseName.slice(idx + 3).trim();
+      baseName = baseName.slice(0, idx).trim();
+    }
+    // v3.6 (powrót do formatu dwuliniowego, decyzja Roberta 2026-08-02):
+    // H3 = TYLKO marka + nazwa handlowa (z numeracją). Opis + pojemność idą do OSOBNEGO
+    // akapitu pod H3, lekko mniejszego. v3.3 skleiła to w jeden H3 i wizualnie "znikały"
+    // główne nazwy produktów. Pełna nazwa (nazwa + opis) zostaje w altach i ItemList.
     const fullName = cleanSubtitle
       ? `${baseName} - ${cleanSubtitle.charAt(0).toLowerCase()}${cleanSubtitle.slice(1)}`
       : baseName;
-    h3a.textContent = `${nr}. ${fullName}`;
+    h3a.textContent = `${nr}. ${baseName}`;
     h3.appendChild(h3a);
 
     titleEl.replaceWith(h3);
 
-    const lastHeaderEl = h3;
+    // Usuń ewentualny STARY akapit podtytułu tuż pod h3 (regeneracja formatu v3.6),
+    // żeby nie zdublować — zaraz wstawimy świeży.
+    const maybeOldSub = h3.nextElementSibling;
+    if (maybeOldSub && maybeOldSub.tagName === "P" && maybeOldSub.querySelector("span.subtitle")) {
+      if (!cleanSubtitle) {
+        const t = maybeOldSub.textContent.replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
+        if (t) cleanSubtitle = t;
+      }
+      maybeOldSub.remove();
+    }
+
+    let lastHeaderEl = h3;
+    if (cleanSubtitle) {
+      const subP = doc.createElement("p");
+      // Delikatnie mniejszy od H3, pogrubiony, bez linku (brief D2: bez dublowania anchor textu).
+      // span.subtitle w środku pozwala parseProducts odzyskać podtytuł przy kolejnej regeneracji.
+      subP.setAttribute("style", "font-size:15px;font-weight:600;margin:2px 0 10px;");
+      const subSpan = doc.createElement("span");
+      subSpan.setAttribute("class", "subtitle");
+      subSpan.textContent = cleanSubtitle.charAt(0).toUpperCase() + cleanSubtitle.slice(1);
+      subP.appendChild(subSpan);
+      h3.after(subP);
+      lastHeaderEl = subP;
+    }
     headerByUrl.set(product.url, { h3, lastHeaderEl, fullName });
   }
 
@@ -1706,7 +1738,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.5 · FAQ jako JSON do pola CMS; artykuł bez sekcji Q&amp;A i bez FAQPage
+                v3.6 · format dwuliniowy: H3 marka+nazwa, opis w osobnej linii
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
