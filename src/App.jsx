@@ -261,26 +261,11 @@ function parseProducts(input) {
     let subtitle = "";
     let imageUrl = "";
 
-    // v3.7 BUG-FIX: format dwuliniowy to DWA osobne linki <strong> w tym samym akapicie
-    // tytułowym — pierwszy to nazwa handlowa (marka + nazwa), drugi to polski podtytuł
-    // z pojemnością. Decyduje KOLEJNOŚĆ W DOM, nie długość tekstu.
-    // Do v3.6 obowiązywało "najdłuższy <strong> wygrywa", co podmieniało nazwę na podtytuł,
-    // gdy podtytuł był choćby o jeden znak dłuższy, np.:
-    //   "RVB LAB Microbioma Daily Protection Cream SPF 50"  (47 zn.)
-    //   "Lekki pre-probiotyczny krem ochronny SPF 50 50 ml" (48 zn.)  ← wygrywał
-    // Skutek: w H3, alt i ItemList zamiast nazwy produktu lądował polski opis.
-    // Przy okazji podtytuł był gubiony całkowicie, bo szukano go WYŁĄCZNIE w span.subtitle,
-    // który istnieje tylko w outputcie poprzedniej generacji Studio, a nie w świeżym wklejeniu z CMS.
-    const strongLinks = links.filter(l => !l.querySelector("img") && l.querySelector("strong"));
-    if (strongLinks.length > 0) {
-      name = strongLinks[0].querySelector("strong").textContent.replace(/\s+/g, " ").trim();
-      // Podtytuł bierzemy tylko z TEGO SAMEGO akapitu tytułowego — inaczej złapalibyśmy
-      // pogrubiony link do produktu z treści artykułu.
-      const titleP = strongLinks[0].closest("p");
-      for (const l of strongLinks.slice(1)) {
-        if (titleP && l.closest("p") !== titleP) continue;
-        const t = l.querySelector("strong").textContent.replace(/\s+/g, " ").trim();
-        if (t && t !== name) { subtitle = t; break; }
+    for (const l of links) {
+      const strong = l.querySelector("strong");
+      if (strong) {
+        const t = strong.textContent.replace(/\s+/g, " ").trim();
+        if (t.length > name.length) name = t;
       }
     }
     if (!name) {
@@ -291,14 +276,11 @@ function parseProducts(input) {
     }
     if (!name) continue;
 
-    // Fallback dla regeneracji własnego outputu (H3 + <p><span class="subtitle">).
-    if (!subtitle) {
-      for (const l of links) {
-        const sub = l.querySelector(".subtitle, span.subtitle");
-        if (sub) {
-          const t = sub.textContent.replace(/\s+/g, " ").trim();
-          if (t && t !== name) { subtitle = t; break; }
-        }
+    for (const l of links) {
+      const sub = l.querySelector(".subtitle, span.subtitle");
+      if (sub) {
+        const t = sub.textContent.replace(/\s+/g, " ").trim();
+        if (t && t !== name) { subtitle = t; break; }
       }
     }
 
@@ -826,18 +808,10 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     // v3.6: rozklejenie nazw scalonych przez v3.3-v3.5 ("Nazwa - opis pojemność" w jednym H3).
     // Przy regeneracji artykułu z tamtych wersji podtytułu nie ma osobno, siedzi w nazwie
     // po " - ". Dzielimy na pierwszym " - ", żeby wrócić do formatu dwuliniowego.
-    // v3.7 BUG-FIX: dzielimy TYLKO wtedy, gdy fragment po " - " zaczyna się MAŁĄ literą.
-    // Dokładnie taki kształt produkowały v3.3-v3.5 (fullName = "Nazwa - podtytuł z małej litery",
-    // patrz kilka linii niżej). Nazwy handlowe z myślnikiem w środku mają po " - " WIELKĄ literę
-    // i nie wolno ich ciąć — v3.6 robiła z
-    //   "MedMelano Calm Me! Soothing And Anti - Redness Post - Treatment Cream"
-    // dwie części: H3 "MedMelano Calm Me! Soothing And Anti" + podtytuł "Redness Post - Treatment Cream".
-    if (!cleanSubtitle) {
-      const merged = baseName.match(/^(.*?) - (\p{Ll}.*)$/u);
-      if (merged) {
-        baseName = merged[1].trim();
-        cleanSubtitle = merged[2].trim();
-      }
+    if (!cleanSubtitle && baseName.includes(" - ")) {
+      const idx = baseName.indexOf(" - ");
+      cleanSubtitle = baseName.slice(idx + 3).trim();
+      baseName = baseName.slice(0, idx).trim();
     }
     // v3.6 (powrót do formatu dwuliniowego, decyzja Roberta 2026-08-02):
     // H3 = TYLKO marka + nazwa handlowa (z numeracją). Opis + pojemność idą do OSOBNEGO
@@ -1408,7 +1382,16 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
 // Pytania mają NIE być parafrazami TOC (już je czytelnik widzi w spisie treści).
 async function generateFAQ(context) {
   const tocText = (context.tocItems || []).map(t => `- ${t}`).join("\n") || "(brak)";
-  const productsText = (context.products || []).map(p => `- ${p.name}${p.subtitle ? " (" + p.subtitle + ")" : ""}`).join("\n") || "(brak)";
+  const productsText = (context.products || []).map(p => `- ${p.name}${p.subtitle ? " (" + p.subtitle + ")" : ""}`).join("\n") || "(brak — artykuł edukacyjny bez produktów)";
+  // v3.7: fragment treści artykułu w kontekście. Dla artykułów edukacyjnych (bez produktów)
+  // to jedyne źródło tematu poza TOC; dla produktowych — doprecyzowuje kontekst pytań.
+  let articleExcerpt = "";
+  if (context.articleHtml) {
+    try {
+      const tmpDoc = new DOMParser().parseFromString(context.articleHtml, "text/html");
+      articleExcerpt = (tmpDoc.body.textContent || "").replace(/\s+/g, " ").trim().slice(0, 2500);
+    } catch (e) { articleExcerpt = ""; }
+  }
 
   const prompt = `Jesteś redaktorem polskiego bloga kosmetyczno-zdrowotnego Lemoné. Wygeneruj sekcję FAQ — 6 najczęściej zadawanych pytań wraz z odpowiedziami — która uzupełni poniższy artykuł.
 
@@ -1418,6 +1401,7 @@ ${tocText}
 
 Produkty omawiane w artykule:
 ${productsText}
+${articleExcerpt ? `\nFragment treści artykułu:\n${articleExcerpt}\n` : ""}
 
 ZASADY DOBORU PYTAŃ
 - Pytania mają być takie, jakie czytelnik faktycznie wpisze w Google (search intent — "jak", "kiedy", "czy", "ile", "co lepiej")
@@ -1537,10 +1521,8 @@ function buildBoxOnly(product, data) {
   // v3.4: strip numeracji z nazwy — przy regeneracji własnego outputu nazwa z H3 zawiera
   // "{nr}. ", który nie może trafić do alta.
   const altBase = (product.name || "").replace(/^\s*\d+[.)]\s*/, "");
-  // v3.7: małą literą tylko PIERWSZY znak podtytułu (spójnie z fullName w renderProducts).
-  // Wcześniejsze .toLowerCase() na całości psuło alt: "...krem ochronny spf 50 50 ml".
   const altText = product.subtitle
-    ? `${altBase} - ${product.subtitle.charAt(0).toLowerCase()}${product.subtitle.slice(1)}`
+    ? `${altBase} - ${product.subtitle.toLowerCase()}`
     : altBase;
   const photoHtml = product.imageUrl
     ? `    <div class="lp-photo">
@@ -1586,7 +1568,11 @@ export default function App() {
 
   const handleAnalyze = async () => {
     const found = parseProducts(input);
-    if (found.length === 0) {
+    // v3.7 — ŚCIEŻKA EDUKACYJNA. Artykuł bez produktów (poradnik, treść ekspercka) to
+    // pełnoprawny przypadek: dostaje TOC, cleanup artefaktów i FAQ (JSON do pola CMS),
+    // czyli wszystko co buduje widoczność SEO/AIO, tylko bez boxów i ItemList.
+    // "empty" zostaje wyłącznie dla pustego inputu.
+    if (found.length === 0 && !(input || "").trim()) {
       setProducts([]);
       setStep("empty");
       return;
@@ -1600,40 +1586,40 @@ export default function App() {
     setTocItems(initialToc);
     setStep("results");
 
-    setProgress({ current: 0, total: found.length });
     const generatedBoxes = {};
-    for (let i = 0; i < found.length; i++) {
-      setProgress({ current: i + 1, total: found.length });
-      const result = await runOne(found[i]);
-      if (result?.status === "ready") generatedBoxes[found[i].url] = result;
-      // Gap między boxami — rozkłada calls w czasie żeby nie kumulować rate limitu po stronie Workera/Anthropic.
-      // Dla 4 produktów dodaje ~6s, ale dramatycznie zmniejsza szansę padu po 3-4 boxach.
-      if (i < found.length - 1) {
-        await new Promise(r => setTimeout(r, 2000));
+    if (found.length > 0) {
+      setProgress({ current: 0, total: found.length });
+      for (let i = 0; i < found.length; i++) {
+        setProgress({ current: i + 1, total: found.length });
+        const result = await runOne(found[i]);
+        if (result?.status === "ready") generatedBoxes[found[i].url] = result;
+        // Gap między boxami — rozkłada calls w czasie żeby nie kumulować rate limitu po stronie Workera/Anthropic.
+        // Dla 4 produktów dodaje ~6s, ale dramatycznie zmniejsza szansę padu po 3-4 boxach.
+        if (i < found.length - 1) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      setProgress(null);
+
+      // Po wygenerowaniu wszystkich boxów: walidacja `related` przeciwko żywym URL-om sklepu.
+      // CATEGORIES ma 1149 wpisów z auto-derywowanymi slugami, ale shop może mieć inne dla części
+      // kategorii. /check-link w Workerze robi HEAD do sklep.lemone.pl<slug> i mówi czy URL działa.
+      // Te które nie działają, usuwamy z `related` i regenerujemy HTML boxa.
+      if (Object.keys(generatedBoxes).length > 0) {
+        await validateRelatedSlugs(found, generatedBoxes);
       }
     }
-    setProgress(null);
 
-    // Po wygenerowaniu wszystkich boxów: walidacja `related` przeciwko żywym URL-om sklepu.
-    // CATEGORIES ma 1149 wpisów z auto-derywowanymi slugami, ale shop może mieć inne dla części
-    // kategorii. /check-link w Workerze robi HEAD do sklep.lemone.pl<slug> i mówi czy URL działa.
-    // Te które nie działają, usuwamy z `related` i regenerujemy HTML boxa.
-    if (Object.keys(generatedBoxes).length > 0) {
-      await validateRelatedSlugs(found, generatedBoxes);
-    }
-
-    // FAQ generuje się raz, po batchu i walidacji slugów. Niezależne od slug-validation —
-    // jeśli walidacja padnie, FAQ i tak ma sens. Jeśli FAQ padnie, boxy są nieruszane.
-    if (Object.keys(generatedBoxes).length > 0) {
-      setFaqStatus("loading");
-      try {
-        const items = await generateFAQ({ products: found, tocItems: initialToc });
-        setFaqItems(items);
-        setFaqStatus("ready");
-      } catch (e) {
-        setFaqError(e.message || String(e));
-        setFaqStatus("error");
-      }
+    // FAQ generuje się zawsze gdy jest treść — także w ścieżce edukacyjnej (v3.7).
+    // Dla artykułów bez produktów kontekstem jest TOC + fragment treści artykułu.
+    setFaqStatus("loading");
+    try {
+      const items = await generateFAQ({ products: found, tocItems: initialToc, articleHtml: input });
+      setFaqItems(items);
+      setFaqStatus("ready");
+    } catch (e) {
+      setFaqError(e.message || String(e));
+      setFaqStatus("error");
     }
   };
 
@@ -1740,7 +1726,11 @@ export default function App() {
     setFaqError(null);
   };
 
-  const allReady = products.length > 0 && products.every(p => boxes[p.url]?.status === "ready");
+  // v3.7: ścieżka edukacyjna (0 produktów) też jest "ready" — pełny artykuł dostępny
+  // od razu (TOC + cleanup), bez czekania na boxy których nie ma.
+  const allReady = products.length === 0
+    ? step === "results"
+    : products.every(p => boxes[p.url]?.status === "ready");
 
   return (
     <div style={{ minHeight: "100vh", background: "#faf8f4", fontFamily: "'IBM Plex Sans', system-ui, sans-serif", color: "#1f2e1f" }}>
@@ -1766,7 +1756,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.7 · format dwuliniowy + fix nazw produktów (kolejność DOM, myślnik w nazwie)
+                v3.7 · ścieżka edukacyjna: artykuły bez produktów z TOC, cleanupem i FAQ
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1968,18 +1958,27 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
       <SectionHeader title="Spis treści" subtitle="Wyciągnięty z H2 i FAQ artykułu — możesz edytować przed kopiowaniem" />
       <TocCard items={tocItems} setItems={setTocItems} />
 
-      <SectionHeader title="Boxy produktowe" subtitle={`${products.length} ${products.length === 1 ? "wykryty produkt" : "wykrytych produktów"} z artykułu`} extraTop={28} />
-      <div style={{ display: "grid", gap: 16 }}>
-        {products.map((p, idx) => (
-          <ProductCard
-            key={p.url}
-            product={p}
-            box={boxes[p.url]}
-            index={idx + 1}
-            onRetry={() => onRetry(p)}
-          />
-        ))}
-      </div>
+      {products.length > 0 ? (
+        <>
+          <SectionHeader title="Boxy produktowe" subtitle={`${products.length} ${products.length === 1 ? "wykryty produkt" : "wykrytych produktów"} z artykułu`} extraTop={28} />
+          <div style={{ display: "grid", gap: 16 }}>
+            {products.map((p, idx) => (
+              <ProductCard
+                key={p.url}
+                product={p}
+                box={boxes[p.url]}
+                index={idx + 1}
+                onRetry={() => onRetry(p)}
+              />
+            ))}
+          </div>
+        </>
+      ) : (
+        <div style={{ marginTop: 28, padding: "14px 18px", background: "#eef4ee", border: "1px solid #cfe0cf", borderRadius: 10, fontSize: 13.5, color: "#2d4a2d" }}>
+          <strong>Tryb edukacyjny</strong> — nie wykryto produktów w artykule. Studio przygotuje spis treści,
+          cleanup kodu i sekcję Q&amp;A (JSON do pola CMS). Boxy produktowe i ItemList są pomijane.
+        </div>
+      )}
 
       <SectionHeader
         title="Q&A - często zadawane pytania"
