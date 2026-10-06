@@ -1,9 +1,13 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Copy, Check, FileText, Sparkles, AlertCircle, Loader2, RefreshCw, ChevronDown, ChevronRight, Package, Zap, Download, Plus, X } from "lucide-react";
+// v4.0: moduł Generator (osobny plik) + design system (specyfikacja v4.0-v2, sekcja 9).
+// Funkcje wspólne idą do Generatora PRZEZ PROPS (bez eksportów nazwanych i bez cyklu importów).
+import Generator from "./generator.jsx";
+import theme from "./theme.js";
 
-// === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) — REVERTED z 1149 do oryginału ===
+// === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) - REVERTED z 1149 do oryginału ===
 // Robert: nowe powiązania (gdy lista miała 1149) były gorsze jakościowo. Wracamy do 156 oryginalnych
-// kategorii z arkuszy "Ranking L2/L3" pliku Mapowanie_kategorii_Lemone.xlsx — te slugi są zwalidowane
+// kategorii z arkuszy "Ranking L2/L3" pliku Mapowanie_kategorii_Lemone.xlsx - te slugi są zwalidowane
 // na produkcji i wcześniejsze powiązania działały dobrze. Każdy wpis dostaje pole `c` (kontener)
 // żeby klasyfikator (Haiku) mógł nadal filtrować pulę kategorii dla swojego promptu.
 const CATEGORIES = [
@@ -166,20 +170,20 @@ const CATEGORIES = [
 ];
 
 const VALID_SLUGS = new Set(CATEGORIES.map(c => c.s));
-const CATS_LIST_TEXT = CATEGORIES.map(c => `${c.n} | ${c.s}`).join("\n"); // fallback only — used when classifier fails
+const CATS_LIST_TEXT = CATEGORIES.map(c => `${c.n} | ${c.s}`).join("\n"); // fallback only - used when classifier fails
 
 // === CONTAINER METADATA ===
-// 8 top-level branches from Akeneo "Drzewo kategorii Lemone nowe" — used by classifier (multi-label).
+// 8 top-level branches from Akeneo "Drzewo kategorii Lemone nowe" - used by classifier (multi-label).
 // Order matters for prompt readability (most common first).
 const CONTAINERS = [
-  { id: "pielegnacja",         label: "Pielęgnacja",         desc: "codzienna pielęgnacja skóry/włosów/ciała/ust — kremy, sera, mleczka, balsamy, peelingi, oleje, maski; kategorie typu 'Krem do twarzy na noc', 'Serum do ust', 'Mleczko do ciała'" },
-  { id: "wskazanie",           label: "Wskazanie",           desc: "produkt nakierowany na konkretny problem — trądzik, zmarszczki, AZS, łuszczyca, wypadanie włosów, menopauza, blizny, cienie pod oczami, przebarwienia, cellulit" },
-  { id: "kosmetyki_naturalne", label: "Kosmetyki naturalne", desc: "clean / natural beauty — ekologiczne, wegańskie, retinol naturalny, witamina C, kosmetyki bez parabenów; nie konfundować ze zwykłą pielęgnacją" },
-  { id: "suplementy",          label: "Suplementy diety",    desc: "produkty do spożycia — witaminy, minerały, kapsułki, tabletki, formuły bioaktywne, syropy, krople, fitoterapia" },
-  { id: "makijaz",             label: "Makijaż",             desc: "kolorówka — podkład, korektor, puder, róż, pomadka, szminka, błyszczyk, tusz do rzęs, eyeliner, cienie, kredka, akcesoria do makijażu" },
-  { id: "dla_kogo",            label: "Dla kogo",            desc: "produkty wyraźnie targetowane na grupę — dzieci, kobiety w ciąży / karmiące, mężczyźni, nastolatki" },
-  { id: "kategorie",           label: "Kategorie",           desc: "akcesoria i SPA — szczotki, masażery, urządzenia, kosmetyki do kąpieli, opalanie, akcesoria do włosów, dodatki" },
-  { id: "dermokosmetyki",      label: "Dermokosmetyki",      desc: "linie dermo / apteczne / lecznicze — szczególnie do skóry wrażliwej, atopowej, trądzikowej, naczynkowej, podkłady i kremy BB dermokosmetyczne" }
+  { id: "pielegnacja",         label: "Pielęgnacja",         desc: "codzienna pielęgnacja skóry/włosów/ciała/ust - kremy, sera, mleczka, balsamy, peelingi, oleje, maski; kategorie typu 'Krem do twarzy na noc', 'Serum do ust', 'Mleczko do ciała'" },
+  { id: "wskazanie",           label: "Wskazanie",           desc: "produkt nakierowany na konkretny problem - trądzik, zmarszczki, AZS, łuszczyca, wypadanie włosów, menopauza, blizny, cienie pod oczami, przebarwienia, cellulit" },
+  { id: "kosmetyki_naturalne", label: "Kosmetyki naturalne", desc: "clean / natural beauty - ekologiczne, wegańskie, retinol naturalny, witamina C, kosmetyki bez parabenów; nie konfundować ze zwykłą pielęgnacją" },
+  { id: "suplementy",          label: "Suplementy diety",    desc: "produkty do spożycia - witaminy, minerały, kapsułki, tabletki, formuły bioaktywne, syropy, krople, fitoterapia" },
+  { id: "makijaz",             label: "Makijaż",             desc: "kolorówka - podkład, korektor, puder, róż, pomadka, szminka, błyszczyk, tusz do rzęs, eyeliner, cienie, kredka, akcesoria do makijażu" },
+  { id: "dla_kogo",            label: "Dla kogo",            desc: "produkty wyraźnie targetowane na grupę - dzieci, kobiety w ciąży / karmiące, mężczyźni, nastolatki" },
+  { id: "kategorie",           label: "Kategorie",           desc: "akcesoria i SPA - szczotki, masażery, urządzenia, kosmetyki do kąpieli, opalanie, akcesoria do włosów, dodatki" },
+  { id: "dermokosmetyki",      label: "Dermokosmetyki",      desc: "linie dermo / apteczne / lecznicze - szczególnie do skóry wrażliwej, atopowej, trądzikowej, naczynkowej, podkłady i kremy BB dermokosmetyczne" }
 ];
 const CONTAINER_IDS = new Set(CONTAINERS.map(c => c.id));
 
@@ -212,16 +216,16 @@ function getCategoriesForContainers(containers) {
 
 // === HTML PARSER ===
 const PRODUCT_URL_RE = /^\/p-.+\.html$/;
-// Wariant tolerancyjny — łapie WSZYSTKIE warianty linków produktu jakie CMS może wkleić:
+// Wariant tolerancyjny - łapie WSZYSTKIE warianty linków produktu jakie CMS może wkleić:
 //   /p-XXX.html                              (relative, kanoniczny)
-//   /cms/p-XXX.html                          (stary edytor, /cms/ prefix — v2.2)
-//   https://sklep.lemone.pl/p-XXX.html       (absolute URL, nowy CKEditor — v2.7)
+//   /cms/p-XXX.html                          (stary edytor, /cms/ prefix - v2.2)
+//   https://sklep.lemone.pl/p-XXX.html       (absolute URL, nowy CKEditor - v2.7)
 //   https://www.sklep.lemone.pl/p-XXX.html   (z www, na wszelki wypadek)
 // Bez tego apka nie grupowałaby linka tytułu i linka obrazka, generowała lemone-product
 // bez lp-photo i zostawiała luźny <p><a><img></a></p> w treści.
 const PRODUCT_URL_TOLERANT_RE = /^(?:https?:\/\/(?:www\.)?sklep\.lemone\.pl)?(?:\/cms)?\/p-.+\.html$/i;
 
-// Zwraca canoniczny URL produktu z dowolnego wariantu — strip:
+// Zwraca canoniczny URL produktu z dowolnego wariantu - strip:
 //   (1) absolute prefix https://sklep.lemone.pl (z/bez www)
 //   (2) /cms/ prefix
 // Wszystkie 3 warianty z PRODUCT_URL_TOLERANT_RE redukują się do /p-XXX.html.
@@ -239,7 +243,7 @@ function parseProducts(input) {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const allLinks = Array.from(doc.querySelectorAll("a[href]"));
   // Łapiemy WSZYSTKIE warianty (z i bez /cms/), ale grupujemy po canonical URL (bez prefixu).
-  // Dzięki temu link "/p-XXX.html" i "/cms/p-XXX.html" trafiają do tego samego produktu — ważne
+  // Dzięki temu link "/p-XXX.html" i "/cms/p-XXX.html" trafiają do tego samego produktu - ważne
   // bo niektóre obrazki w CMS mają prefix /cms/ podczas gdy tytuł produktu go nie ma.
   const productLinks = allLinks.filter(a => PRODUCT_URL_TOLERANT_RE.test(a.getAttribute("href")));
 
@@ -262,7 +266,7 @@ function parseProducts(input) {
     let imageUrl = "";
 
     // v3.7 BUG-FIX: format dwuliniowy to DWA osobne linki <strong> w tym samym akapicie
-    // tytułowym — pierwszy to nazwa handlowa (marka + nazwa), drugi to polski podtytuł
+    // tytułowym - pierwszy to nazwa handlowa (marka + nazwa), drugi to polski podtytuł
     // z pojemnością. Decyduje KOLEJNOŚĆ W DOM, nie długość tekstu.
     // Do v3.6 obowiązywało "najdłuższy <strong> wygrywa", co podmieniało nazwę na podtytuł,
     // gdy podtytuł był choćby o jeden znak dłuższy, np.:
@@ -274,7 +278,7 @@ function parseProducts(input) {
     const strongLinks = links.filter(l => !l.querySelector("img") && l.querySelector("strong"));
     if (strongLinks.length > 0) {
       name = strongLinks[0].querySelector("strong").textContent.replace(/\s+/g, " ").trim();
-      // Podtytuł bierzemy tylko z TEGO SAMEGO akapitu tytułowego — inaczej złapalibyśmy
+      // Podtytuł bierzemy tylko z TEGO SAMEGO akapitu tytułowego - inaczej złapalibyśmy
       // pogrubiony link do produktu z treści artykułu.
       const titleP = strongLinks[0].closest("p");
       for (const l of strongLinks.slice(1)) {
@@ -335,21 +339,21 @@ function extractTocItems(input) {
   const items = [];
   const seen = new Set();
 
-  // H2s w kolejności w dokumencie — to są główne sekcje artykułu.
+  // H2s w kolejności w dokumencie - to są główne sekcje artykułu.
   // Headery wrapperów FAQ (z details>summary w środku) pomijamy, bo summary'es nie idą do głównego TOC.
   // (v2.8) Wcześniej apka łapała też details>summary jako pozycje TOC, co powodowało że pytania
-  // ze starych sekcji FAQ wskakiwały do głównego spisu treści jako osobne sekcje. Niepożądane —
+  // ze starych sekcji FAQ wskakiwały do głównego spisu treści jako osobne sekcje. Niepożądane -
   // TOC powinien zawierać tylko sekcje H2 najwyższego poziomu.
   const h2s = Array.from(doc.querySelectorAll("h2"));
   for (const h2 of h2s) {
     const text = h2.textContent.replace(/\s+/g, " ").trim();
     if (!text || seen.has(text)) continue;
-    // Skip stare wrappery FAQ ("Najczęstsze pytania", "FAQ") — zostaną zastąpione przez
+    // Skip stare wrappery FAQ ("Najczęstsze pytania", "FAQ") - zostaną zastąpione przez
     // generated FAQ section z buildFaqHTML, który dorzuca własną pozycję TOC z poprawnym id.
     if (/najczęstsze pytania|^faq$/i.test(text)) continue;
     // v3.7: pozycję FAQ w TOC ZOSTAWIAMY celowo. Szablon CMS renderuje sekcję jako
     // <section class="blog-faq"><h2 class="blog-faq__heading" id="sec-q-a-czesto-zadawane-pytania">,
-    // czyli kotwica z TOC trafia dokładnie tam, gdzie trzeba — pod warunkiem, że pole CMS
+    // czyli kotwica z TOC trafia dokładnie tam, gdzie trzeba - pod warunkiem, że pole CMS
     // "FAQ (dane strukturalne)" jest wypełnione. Pusty pole = brak sekcji = martwy link,
     // ale to błąd publikacji, nie generatora (ostrzeżenie o tym jest w UI przy karcie FAQ).
     items.push(text);
@@ -396,19 +400,19 @@ function slugifyToId(text) {
 }
 
 // === FULL ARTICLE ASSEMBLER ===
-// Renders FAQ section as styled cards (no accordion — CMS sanitization strips
+// Renders FAQ section as styled cards (no accordion - CMS sanitization strips
 // interactive `<details>` styling). Each Q&A is a self-contained div with inline styles.
 // Plus FAQPage JSON-LD schema embedded as <script> for SEO (Google rich results).
 // v3.3 (B4 z briefu): ujednolicenie myślników w treściach generowanych przez model.
-// Sonnet potrafi zwracać "—" (em-dash) i "–" (en-dash); artykuł używa "-". Normalizujemy
+// Sonnet potrafi zwracać "\u2014" (em-dash) i "\u2013" (en-dash); artykuł używa "-". Normalizujemy
 // do "-" z otaczającymi spacjami, żeby widoczny tekst i JSON-LD były spójne z resztą treści.
 function normalizeDashes(s) {
   return (s || "")
-    // v3.4.2: zakresy liczbowe NAJPIERW — "2–3", "2 — 3", "2 - 3" → "2-3" (dywiz bez spacji).
+    // v3.4.2: zakresy liczbowe NAJPIERW - "2\u20133", "2 \u2014 3", "2 - 3" → "2-3" (dywiz bez spacji).
     // Poprzednia wersja rozbijała zakresy na "2 - 3", bo reguła ogólna łapała też cyfry.
-    .replace(/(\d)\s*[—–-]\s*(\d)/g, "$1-$2")
+    .replace(/(\d)\s*[\u2014\u2013-]\s*(\d)/g, "$1-$2")
     // Reszta em/en dashy → " - "
-    .replace(/\s*[—–]\s*/g, " - ");
+    .replace(/\s*[\u2014\u2013]\s*/g, " - ");
 }
 
 // v3.5: JSON dla dedykowanego pola "FAQ (dane strukturalne)" w CMS Lemoné.
@@ -440,7 +444,7 @@ function buildFaqHTML(items) {
     </div>`;
   }).join("\n");
 
-  // JSON-LD FAQPage schema — Google reads this to potentially show Q&A in search results.
+  // JSON-LD FAQPage schema - Google reads this to potentially show Q&A in search results.
   // Independent from visual rendering; works even bez akordeonu.
   const schemaItems = filtered.map(it => ({
     "@type": "Question",
@@ -512,7 +516,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   // Czyścimy TRZY warianty żeby regeneracja zawsze zaczynała z czystą kartą:
   //   (a) stare żółte boxy ze stylem inline background-color:#fff8e6 (apka <= v1.9)
   //   (b) stare <figure class="image"> wstawione przez image transform (v1.6-v1.9)
-  //   (c) stare <div class="lemone-product"> (poprzednie uruchomienie nowego formatu — np. user zregenerował)
+  //   (c) stare <div class="lemone-product"> (poprzednie uruchomienie nowego formatu - np. user zregenerował)
   const oldYellowBoxes = Array.from(doc.querySelectorAll("div[style]")).filter(el =>
     /background-color:\s*#fff8e6/i.test(el.getAttribute("style") || "")
   );
@@ -580,7 +584,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   // v2.9 przenosiło zagnieżdżone div.product na poziom sibling, ale miało lukę: treść artykułu
   // (akapit zamykający, box "Zobacz również", FAQ), która siedziała w najgłębszym col-12 ZA
   // ostatnim produktem, zostawała UWIĘZIONA wewnątrz karty ostatniego produktu.
-  // v3.1 idzie dalej: usuwa wrappery .product/.row/.col-12 CAŁKOWICIE (unwrap — zastąpienie
+  // v3.1 idzie dalej: usuwa wrappery .product/.row/.col-12 CAŁKOWICIE (unwrap - zastąpienie
   // wrappera jego dziećmi, z zachowaniem kolejności). To legacy Bootstrap grid:
   //   - col-12 = pełna szerokość, czyli brak wrappera renderuje się identycznie
   //   - spec lemone-product Szczepana nie wymaga tych wrapperów
@@ -613,7 +617,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   // - wiodące/końcowe &nbsp; w tekstach: normalizacja w tytułach/podtytułach robiona przy parsowaniu
   for (const span of Array.from(doc.querySelectorAll('span[style*="letter-spacing"]'))) {
     const st = span.getAttribute("style") || "";
-    // Tylko zerowe letter-spacing (0px, 0em, 0) — nie ruszamy celowych stylistycznych spacingów
+    // Tylko zerowe letter-spacing (0px, 0em, 0) - nie ruszamy celowych stylistycznych spacingów
     if (!/letter-spacing:\s*0(px|em|rem)?\s*(;|$)/i.test(st)) continue;
     const parent = span.parentNode;
     while (span.firstChild) parent.insertBefore(span.firstChild, span);
@@ -665,7 +669,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     if (parentTag === "PRE" || parentTag === "CODE" || parentTag === "SCRIPT" || parentTag === "STYLE") continue;
     const onlyWs = t.textContent.replace(/[\s\u00a0]+/g, "") === "";
     if (onlyWs && (parentTag === "BODY" || parentTag === "DIV")) {
-      // Goły węzeł między blokami — jeśli zawiera &nbsp;, to artefakt; czysty whitespace
+      // Goły węzeł między blokami - jeśli zawiera &nbsp;, to artefakt; czysty whitespace
       // (indentacja HTML) zostaje bo jest nieznaczący i utrzymuje czytelność źródła
       if (/\u00a0/.test(t.textContent)) t.remove();
       continue;
@@ -675,19 +679,19 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     }
   }
 
-  // 5. Dla każdego produktu — znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
+  // 5. Dla każdego produktu - znajdź paragraf-zdjęcie i OPAKUJ w nową strukturę lemone-product.
   // Strategia: znajdujemy <p> zawierający <a><img></a> (z linkiem do tego produktu, BĄDŹ z /cms/ prefix),
   // wycinamy ten <p> i wstawiamy zamiast niego pełną strukturę lemone-product.
   // Tytuł produktu (paragraf z <a><strong>nazwa</strong></a>) zostaje NIETKNIĘTY przed strukturą.
   // Opis (paragraf po zdjęciu) zostaje NIETKNIĘTY za strukturą.
-  // BUG-FIX (v2.2): obsługa wariantu /cms/p-XXX.html — niektóre obrazki w wkleconym HTML z CMS
+  // BUG-FIX (v2.2): obsługa wariantu /cms/p-XXX.html - niektóre obrazki w wkleconym HTML z CMS
   // mają prefix /cms/ w linku, mimo że link tekstowy do produktu nie ma tego prefixu.
   // Bez tego apka generowała lemone-product bez lp-photo i zostawiała "luźny" <p><img></p> w treści.
   for (const product of products) {
     const box = boxes[product.url];
     if (!box || box.status !== "ready") continue;
 
-    // Wszystkie linki które MATCHUJĄ ten produkt — z dowolnym wariantem prefixu /cms/.
+    // Wszystkie linki które MATCHUJĄ ten produkt - z dowolnym wariantem prefixu /cms/.
     // Porównujemy canonicalny URL (bez /cms/) zamiast literalnego stringa.
     const allLinks = Array.from(doc.querySelectorAll("a[href]"));
     const productLinks = allLinks.filter(a => {
@@ -705,7 +709,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       if (!img) continue;
       const p = link.closest("p");
       if (!p) continue;
-      // Paragraf zawiera TYLKO obrazek (tekst pusty) — to klasyczny "paragraf zdjęcia"
+      // Paragraf zawiera TYLKO obrazek (tekst pusty) - to klasyczny "paragraf zdjęcia"
       if (p.textContent.replace(/\s+/g, "") !== "") continue;
       photoP = p;
       photoImg = img;
@@ -771,10 +775,10 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   // z artykułu który rankuje). Dla każdego produktu, w kolejności dokumentu:
   //   (a) tytuł-paragraf (<p><a><strong>nazwa</strong></a>...) → <h3 id="prod-{slug}">
   //       <a href="{url}">{nr}. {nazwa}</a></h3> + podtytuł jako <p><strong>{podtytuł}</strong></p>
-  //       BEZ drugiego linku (duplikacja linków rozmywa anchor text — brief, Defekt 2)
+  //       BEZ drugiego linku (duplikacja linków rozmywa anchor text - brief, Defekt 2)
   //   (b) segment [h3, podtytuł, lemone-product, kolejne <p> opisu] → opakowany w
   //       <div class="product"><div class="row"><div class="col-12">...
-  //       Wrapper wstawiany ZAWSZE na poziomie root treści (sibling), nigdy w innym wrapperze —
+  //       Wrapper wstawiany ZAWSZE na poziomie root treści (sibling), nigdy w innym wrapperze -
   //       kaskada niemożliwa, bo krok 4.6 wcześniej usunął wszystkie stare wrappery.
   //   (c) po ostatnim wrapperze: JSON-LD ItemList (Defekt 4) z pozycją, nazwą i absolutnym URL.
   const productOrder = [];
@@ -823,7 +827,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     h3.setAttribute("id", `prod-${slug}`);
     const h3a = doc.createElement("a");
     h3a.setAttribute("href", product.url);
-    // v3.4: strip starego numeru z nazwy ("1. Nazwa" → "Nazwa") — przy regeneracji własnego
+    // v3.4: strip starego numeru z nazwy ("1. Nazwa" → "Nazwa") - przy regeneracji własnego
     // outputu nazwa z linku H3 zawiera już numerację; bez strippingu numer by się dublował.
     const baseName0 = (product.name || "").replace(/^\s*\d+[.)]\s*/, "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
     let cleanSubtitle = (product.subtitle || "").replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, "");
@@ -834,7 +838,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     // v3.7 BUG-FIX: dzielimy TYLKO wtedy, gdy fragment po " - " zaczyna się MAŁĄ literą.
     // Dokładnie taki kształt produkowały v3.3-v3.5 (fullName = "Nazwa - podtytuł z małej litery",
     // patrz kilka linii niżej). Nazwy handlowe z myślnikiem w środku mają po " - " WIELKĄ literę
-    // i nie wolno ich ciąć — v3.6 robiła z
+    // i nie wolno ich ciąć - v3.6 robiła z
     //   "MedMelano Calm Me! Soothing And Anti - Redness Post - Treatment Cream"
     // dwie części: H3 "MedMelano Calm Me! Soothing And Anti" + podtytuł "Redness Post - Treatment Cream".
     if (!cleanSubtitle) {
@@ -857,7 +861,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     titleEl.replaceWith(h3);
 
     // Usuń ewentualny STARY akapit podtytułu tuż pod h3 (regeneracja formatu v3.6),
-    // żeby nie zdublować — zaraz wstawimy świeży.
+    // żeby nie zdublować - zaraz wstawimy świeży.
     const maybeOldSub = h3.nextElementSibling;
     if (maybeOldSub && maybeOldSub.tagName === "P" && maybeOldSub.querySelector("span.subtitle")) {
       if (!cleanSubtitle) {
@@ -941,7 +945,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     const allWrappers = doc.querySelectorAll("div.product");
     const lastWrapper = allWrappers[allWrappers.length - 1];
     if (lastWrapper) {
-      // v3.4.1: nazwa listy — heurystyka trójstopniowa:
+      // v3.4.1: nazwa listy - heurystyka trójstopniowa:
       //   1) H2 zawierający "TOP {n}" (klasyczny ranking)
       //   2) H2 bezpośrednio POPRZEDZAJĄCY pierwszy blok produktowy w dokumencie
       //      (to sekcja, w której produkty faktycznie występują)
@@ -964,7 +968,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
         "name": listName,
         "numberOfItems": productOrder.length,
         "itemListElement": productOrder.map((p, i) => {
-          // v3.3 (D3/D4): pełna nazwa handlowa w ItemList — identyczna z H3 (bez numeru)
+          // v3.3 (D3/D4): pełna nazwa handlowa w ItemList - identyczna z H3 (bez numeru)
           const header = headerByUrl.get(p.url);
           const itemName = (header && header.fullName) || p.name;
           return {
@@ -1011,7 +1015,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
       el = next;
     }
     // v3.3 (D2 z briefu): po wyczyszczeniu zawartości rodzic-wrapper (np.
-    // <div style="margin:40px 0 30px;">) zostaje pusty — usuwamy go, żeby nie wisiał
+    // <div style="margin:40px 0 30px;">) zostaje pusty - usuwamy go, żeby nie wisiał
     // przed nową sekcją Q&A jako martwy element.
     if (parent.tagName === "DIV" && parent.textContent.replace(/[\s\u00a0]+/g, "") === "" && !parent.querySelector("img, script")) {
       parent.remove();
@@ -1030,12 +1034,12 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
   // CMS Lemoné ma dedykowane pole "FAQ (dane strukturalne)" przyjmujące JSON
   // [{"question","answer"}]; sanitizer edytora usuwa bloki <script type="application/ld+json">
   // z treści wpisu przy zapisie, a sekcję FAQ i schema FAQPage renderuje sam CMS
-  // (w miejscu znacznika [faq] w treści, a bez znacznika — na końcu wpisu).
+  // (w miejscu znacznika [faq] w treści, a bez znacznika - na końcu wpisu).
   // Cleanup starych sekcji i schem powyżej ZOSTAJE: wejściowe artykuły z poprzednich
   // generacji nadal zawierają FAQ w treści i trzeba je stamtąd usuwać.
   // JSON dla pola CMS generuje buildFaqCmsJson(), kopiowany osobnym przyciskiem w UI.
 
-  // v3.3 (D2 z briefu) — GLOBALNY SWEEP PUSTYCH DIVÓW.
+  // v3.3 (D2 z briefu) - GLOBALNY SWEEP PUSTYCH DIVÓW.
   // Puste divy-wypełniacze (np. <div style="margin:40px 0 30px;"></div>) zostające po
   // ręcznych edycjach w CMS albo po usunięciu treści: usuwamy każdy div bez tekstu,
   // bez obrazków i bez skryptów. Iteracyjnie, bo usunięcie dziecka może opróżnić rodzica.
@@ -1052,7 +1056,7 @@ function buildCompleteArticle(originalHtml, products, boxes, tocItems, faqItems)
     if (removed === 0) break;
   }
 
-  // v2.9 — KAP MAKSYMALNEGO WCIĘCIA TEKSTOWEGO.
+  // v2.9 - KAP MAKSYMALNEGO WCIĘCIA TEKSTOWEGO.
   // Spłaszczenie zagnieżdżonych div.product (krok 4.6) zmienia STRUKTURĘ DOM, ale
   // text nodes (newline + spacje) zachowane z oryginalnego HTML zostają. Output ma
   // wtedy linie z 36+ spacjami wcięcia, nieczytelne w widoku Źródła w CMS.
@@ -1207,7 +1211,7 @@ async function fetchWithRetry(url, options, maxRetries = 5) {
     try {
       lastResponse = await fetch(url, options);
     } catch (e) {
-      // Network error — retry too, ale tylko raz (mogło być Failed to fetch / DNS hiccup)
+      // Network error - retry too, ale tylko raz (mogło być Failed to fetch / DNS hiccup)
       if (attempt === maxRetries) throw e;
       await new Promise(r => setTimeout(r, 3000 * Math.pow(2, attempt)));
       continue;
@@ -1226,7 +1230,7 @@ async function fetchWithRetry(url, options, maxRetries = 5) {
   return lastResponse;
 }
 
-// === ANTHROPIC API CALL — CLASSIFIER (multi-label, picks 1-4 containers per product) ===
+// === ANTHROPIC API CALL - CLASSIFIER (multi-label, picks 1-4 containers per product) ===
 // Runs before generateBoxData. Output drives which categories enter the box-generation prompt,
 // cutting input tokens 2-10× depending on product type.
 async function classifyProduct(product) {
@@ -1267,7 +1271,7 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      // Haiku ma osobny pool TPM od Sonneta — classifier nie zjada budżetu generatorowi boxa.
+      // Haiku ma osobny pool TPM od Sonneta - classifier nie zjada budżetu generatorowi boxa.
       // Multi-label classification to dla Haiku 4.5 trywialne zadanie, jakość zostaje, koszt 5× niższy.
       model: "claude-haiku-4-5-20251001",
       max_tokens: 200,
@@ -1296,7 +1300,7 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
   }
 
   const raw = Array.isArray(parsed.containers) ? parsed.containers : [];
-  // Validate against known IDs — drop anything the model hallucinated
+  // Validate against known IDs - drop anything the model hallucinated
   const valid = raw.filter(c => CONTAINER_IDS.has(c));
   const dropped = raw.filter(c => !CONTAINER_IDS.has(c));
 
@@ -1306,9 +1310,9 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
   };
 }
 
-// === ANTHROPIC API CALL — BOX GENERATOR ===
+// === ANTHROPIC API CALL - BOX GENERATOR ===
 async function generateBoxData(product) {
-  // Step 1 — classify product to subset of containers (multi-label). Failures fall back to full list.
+  // Step 1 - classify product to subset of containers (multi-label). Failures fall back to full list.
   let classifyResult = null;
   let classifyError = null;
   try {
@@ -1322,7 +1326,7 @@ async function generateBoxData(product) {
   const usingFallback = filteredCats === CATEGORIES;
   const filteredListText = filteredCats.map(c => `${c.n} | ${c.s}`).join("\n");
 
-  // Step 2 — generate box with filtered category list
+  // Step 2 - generate box with filtered category list
   const prompt = `Jesteś redaktorem polskiego bloga kosmetycznego Lemoné. Generujesz dane do boxa pod produkt w artykule.
 
 PRODUKT:
@@ -1330,15 +1334,15 @@ Nazwa: ${product.name}
 Podtytuł: ${product.subtitle || "(brak)"}
 
 OPIS Z ARTYKUŁU:
-${product.description || "(brak — zinterpretuj na podstawie nazwy)"}
+${product.description || "(brak - zinterpretuj na podstawie nazwy)"}
 
 KATEGORIE STRONY (wybierz dokładnie 3 najlepiej dopasowane, slug KOPIUJ 1:1 z listy, NIE WYMYŚLAJ NOWYCH):
 ${filteredListText}
 
 ZASADY:
-- "forWho" — 3-4 krótkie linijki po polsku: typ skóry/problem/sytuacja użytkownika. Format jak: "skóra sucha / odwodniona", "skóra wrażliwa / reaktywna", "po zabiegach estetycznych".
-- "whyWorth" — 3 linijki po polsku z głównymi korzyściami z opisu produktu. Format jak: "intensywna odbudowa bariery hydrolipidowej", "szybkie ukojenie skóry".
-- "related" — DOKŁADNIE 3 obiekty {slug, label}. Slug 1:1 z listy. Label to skrócona, lowercase nazwa wyświetlana w linku (max 4 słowa, naturalna forma w zdaniu np. "kremy nawilżające", "podrażnienie skóry").
+- "forWho" - 3-4 krótkie linijki po polsku: typ skóry/problem/sytuacja użytkownika. Format jak: "skóra sucha / odwodniona", "skóra wrażliwa / reaktywna", "po zabiegach estetycznych".
+- "whyWorth" - 3 linijki po polsku z głównymi korzyściami z opisu produktu. Format jak: "intensywna odbudowa bariery hydrolipidowej", "szybkie ukojenie skóry".
+- "related" - DOKŁADNIE 3 obiekty {slug, label}. Slug 1:1 z listy. Label to skrócona, lowercase nazwa wyświetlana w linku (max 4 słowa, naturalna forma w zdaniu np. "kremy nawilżające", "podrażnienie skóry").
 - Jeśli produkt to suplement diety: w "forWho" pomiń "skóra X", użyj zdrowotnego kontekstu.
 
 ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
@@ -1351,7 +1355,7 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 1000,
-      // effort=low — Anthropic rekomenduje dla "high-volume, simple tasks like classification,
+      // effort=low - Anthropic rekomenduje dla "high-volume, simple tasks like classification,
       // routing, or data extraction where speed matters". Bez tego Sonnet 4.6 ma default high
       // z extended thinkingiem co dawałoby 3-4x dłuższy czas generacji per box. Dla strukturalnego
       // JSON-a z 3 punktami w forWho/whyWorth/related to overkill.
@@ -1367,7 +1371,7 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
       if (body) detail = body.slice(0, 300);
     } catch (_) {}
     if (response.status === 429) {
-      throw new Error(`Limit (429) — pomimo 3 prób. ${detail}`);
+      throw new Error(`Limit (429) - pomimo 3 prób. ${detail}`);
     }
     throw new Error(`API ${response.status}: ${detail}`);
   }
@@ -1391,7 +1395,7 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
     warnings.push(`Pominięto ${droppedRelated.length} slug(ów) spoza bazy: ${droppedRelated.map(r => r?.slug || "?").join(", ")}`);
   }
   if (classifyError) {
-    warnings.push(`Klasyfikator zawiódł — użyto pełnej listy kategorii. Błąd: ${classifyError}`);
+    warnings.push(`Klasyfikator zawiódł - użyto pełnej listy kategorii. Błąd: ${classifyError}`);
   } else if (classifyResult && classifyResult.droppedContainers.length > 0) {
     warnings.push(`Klasyfikator zwrócił nieznane kontenery: ${classifyResult.droppedContainers.join(", ")}`);
   }
@@ -1407,15 +1411,15 @@ ZWRÓĆ WYŁĄCZNIE JSON, BEZ MARKDOWN, BEZ KOMENTARZY:
   };
 }
 
-// === ANTHROPIC API CALL — FAQ GENERATOR ===
+// === ANTHROPIC API CALL - FAQ GENERATOR ===
 // Wywoływane raz na końcu batcha (po wygenerowaniu wszystkich boxów).
 // Generuje 6 pytań + odpowiedzi dopasowanych do tematu artykułu.
 // Pytania mają NIE być parafrazami TOC (już je czytelnik widzi w spisie treści).
 async function generateFAQ(context) {
   const tocText = (context.tocItems || []).map(t => `- ${t}`).join("\n") || "(brak)";
-  const productsText = (context.products || []).map(p => `- ${p.name}${p.subtitle ? " (" + p.subtitle + ")" : ""}`).join("\n") || "(brak — artykuł edukacyjny bez produktów)";
+  const productsText = (context.products || []).map(p => `- ${p.name}${p.subtitle ? " (" + p.subtitle + ")" : ""}`).join("\n") || "(brak - artykuł edukacyjny bez produktów)";
   // v3.8: fragment treści artykułu w kontekście. Dla artykułów edukacyjnych (bez produktów)
-  // to jedyne źródło tematu poza TOC; dla produktowych — doprecyzowuje kontekst pytań.
+  // to jedyne źródło tematu poza TOC; dla produktowych - doprecyzowuje kontekst pytań.
   let articleExcerpt = "";
   if (context.articleHtml) {
     try {
@@ -1424,7 +1428,7 @@ async function generateFAQ(context) {
     } catch (e) { articleExcerpt = ""; }
   }
 
-  const prompt = `Jesteś redaktorem polskiego bloga kosmetyczno-zdrowotnego Lemoné. Wygeneruj sekcję FAQ — 6 najczęściej zadawanych pytań wraz z odpowiedziami — która uzupełni poniższy artykuł.
+  const prompt = `Jesteś redaktorem polskiego bloga kosmetyczno-zdrowotnego Lemoné. Wygeneruj sekcję FAQ - 6 najczęściej zadawanych pytań wraz z odpowiedziami - która uzupełni poniższy artykuł.
 ${articleExcerpt ? `\nFragment treści artykułu:\n${articleExcerpt}\n` : ""}
 
 KONTEKST ARTYKUŁU
@@ -1435,8 +1439,8 @@ Produkty omawiane w artykule:
 ${productsText}
 
 ZASADY DOBORU PYTAŃ
-- Pytania mają być takie, jakie czytelnik faktycznie wpisze w Google (search intent — "jak", "kiedy", "czy", "ile", "co lepiej")
-- NIE PARAFRAZUJ pytań ze spisu treści (TOC) — czytelnik już je widzi powyżej; rozszerz temat o pytania komplementarne
+- Pytania mają być takie, jakie czytelnik faktycznie wpisze w Google (search intent - "jak", "kiedy", "czy", "ile", "co lepiej")
+- NIE PARAFRAZUJ pytań ze spisu treści (TOC) - czytelnik już je widzi powyżej; rozszerz temat o pytania komplementarne
 - Każde pytanie ma rozpocząć dyskusję której artykuł nie pokrywa wprost
 - Unikaj pytań abstrakcyjnych ("co to jest..."); preferuj praktyczne ("jak długo stosować...", "czy można łączyć z...", "dla kogo nie jest wskazane...")
 - Różnorodność: zadawaj pytania z różnych kątów (skutki uboczne, łączenie produktów, częstotliwość, alternatywy, konkretne grupy odbiorców)
@@ -1444,13 +1448,13 @@ ZASADY DOBORU PYTAŃ
 ZASADY ODPOWIEDZI
 - 2-4 zdania, konkretne, faktyczne
 - Polski język, naturalny ton
-- NIE rozpoczynaj od "Tak,"/"Nie," — rozbuduj odpowiedź żeby brzmiała redaktorsko
+- NIE rozpoczynaj od "Tak,"/"Nie," - rozbuduj odpowiedź żeby brzmiała redaktorsko
 - NIE wymyślaj statystyk, badań klinicznych ani konkretnych cyfr które nie są powszechną wiedzą
 - NIE polecaj konkretnych produktów (chyba że tylko ogólnie wspomnij kategorię)
-- Pisz NEUTRALNIE RODZAJOWO — nigdy "jesteś narażona/narażony"; używaj form typu "Twoja skóra jest narażona" albo "jesteśmy narażeni"
+- Pisz NEUTRALNIE RODZAJOWO - nigdy "jesteś narażona/narażony"; używaj form typu "Twoja skóra jest narażona" albo "jesteśmy narażeni"
 - Zakresy liczbowe zapisuj dywizem bez spacji: "2-3 godziny", "20-30 minut"
-- Używaj wyłącznie zwykłego dywizu "-"; nigdy myślnika "—" ani półpauzy "–"
-- FAKTY FIZYCZNE: ekrany urządzeń elektronicznych NIE emitują promieniowania UV — emitują światło niebieskie (HEV); promieniowanie UVA przenika przez szyby okien, ale nie pochodzi z ekranów. Nie twierdź inaczej
+- Używaj wyłącznie zwykłego dywizu "-"; nigdy myślnika "\u2014" ani półpauzy "\u2013"
+- FAKTY FIZYCZNE: ekrany urządzeń elektronicznych NIE emitują promieniowania UV - emitują światło niebieskie (HEV); promieniowanie UVA przenika przez szyby okien, ale nie pochodzi z ekranów. Nie twierdź inaczej
 
 ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
 {"items":[{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}]}`;
@@ -1462,7 +1466,7 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 2000,
-      // effort=low — patrz komentarz w generateBoxData. FAQ to też strukturalny JSON
+      // effort=low - patrz komentarz w generateBoxData. FAQ to też strukturalny JSON
       // (6 par Q&A), nie wymaga extended thinkingu.
       output_config: { effort: "low" },
       messages: [{ role: "user", content: prompt }]
@@ -1484,7 +1488,7 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
 
   let parsed;
   try { parsed = JSON.parse(cleaned); }
-  catch (e) { throw new Error("FAQ — niepoprawny JSON: " + cleaned.slice(0, 120)); }
+  catch (e) { throw new Error("FAQ - niepoprawny JSON: " + cleaned.slice(0, 120)); }
 
   const items = (Array.isArray(parsed.items) ? parsed.items : [])
     .filter(it => it && typeof it.q === "string" && typeof it.a === "string")
@@ -1497,18 +1501,18 @@ ZWRÓĆ TYLKO JSON, BEZ MARKDOWN:
 // === HTML BUILDER ===
 const escapeHtml = (s) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// === HTML BUILDERS (v2.0 — nowy format zgodny ze spec Szczepana) ===
+// === HTML BUILDERS (v2.0 - nowy format zgodny ze spec Szczepana) ===
 // Klasy z motywu sklepu: lemone-product, lp-photo, lp-info.
 // CSS w motywie obsługuje: flex layout (desktop), kolumna (mobile <600px), kremowe tło, ramka.
 // ZASADY TWARDE: zero stylów inline, zero <figure>, <table>, <script>, atrybutu style, max-width, display:inline-block.
 
 // Buduje TYLKO zawartość boksu z korzyściami (do umieszczenia obok <div class="lp-photo">).
-// Nie zawiera <div class="lp-info"> — tylko paragrafy. To pozwala ponownie użyć tej samej funkcji
+// Nie zawiera <div class="lp-info"> - tylko paragrafy. To pozwala ponownie użyć tej samej funkcji
 // w różnych kontekstach (osadzenie w lemone-product albo standalone).
 // Buduje paragrafy z korzyściami WG DOKŁADNEGO formatowania z przykładu Roberta:
 // każdy paragraf ma newline+indent po <p>, każdy element w środku osobno z indentem.
 // Format: <p>\n    <strong>...</strong><br>\n    ✔ ...<br>\n    ✔ ...<br>\n    ✔ ...\n</p>
-// UWAGA (v2.4): inline style="font-size:14px" na <p> w lp-info — kompromisowy workaround
+// UWAGA (v2.4): inline style="font-size:14px" na <p> w lp-info - kompromisowy workaround
 // (łamie spec Szczepana "zero inline"), do usunięcia gdy Szczepan dorzuci do motywu:
 //   .lp-info p { font-size: 14px; }
 function buildBoxOnlyInner(data) {
@@ -1541,15 +1545,15 @@ ${whyLines.map(l => `            → ${escapeHtml(l)}`).join("<br>\n")}
   return [forWhoHtml, whyHtml, relatedHtml].filter(Boolean).join("\n");
 }
 
-// Buduje sam wrapper lemone-product (zdjęcie + info) — bez tytułu nad i bez opisu pod.
+// Buduje sam wrapper lemone-product (zdjęcie + info) - bez tytułu nad i bez opisu pod.
 // Format dokładnie jak we wzorze Roberta: lp-photo z newline+indent przy <a>, lp-info z paragrafami.
 // UWAGA (v2.3): inline style="border-radius:10px" na <img> łamie spec Szczepana "zero inline".
-// To kompromisowy obejście — do usunięcia gdy Szczepan dorzuci do CSS motywu regułę:
+// To kompromisowy obejście - do usunięcia gdy Szczepan dorzuci do CSS motywu regułę:
 //   .lp-photo img { border-radius: 10px; }
 function buildBoxOnly(product, data) {
   const inner = buildBoxOnlyInner(data);
   // Alt opisowy zgodnie z briefem: nazwa produktu + typ + pojemność (czyli nazwa + podtytuł).
-  // v3.4: strip numeracji z nazwy — przy regeneracji własnego outputu nazwa z H3 zawiera
+  // v3.4: strip numeracji z nazwy - przy regeneracji własnego outputu nazwa z H3 zawiera
   // "{nr}. ", który nie może trafić do alta.
   const altBase = (product.name || "").replace(/^\s*\d+[.)]\s*/, "");
   // v3.7: małą literą tylko PIERWSZY znak podtytułu (spójnie z fullName w renderProducts).
@@ -1572,9 +1576,9 @@ ${inner}
 }
 
 // Buduje PEŁNY pakiet do osobnego użycia (np. zakładka "Tylko boxy" w UI / kopiuj-wklej).
-// Tytuł nad strukturą, lemone-product (foto + info), bez opisu pod (opis jest poza naszą kontrolą — pochodzi z wkleconego artykułu).
+// Tytuł nad strukturą, lemone-product (foto + info), bez opisu pod (opis jest poza naszą kontrolą - pochodzi z wkleconego artykułu).
 function buildBoxHTML(product, data) {
-  // Subtitle z wkleconego CMS (jak był) — normalizujemy do <strong> zgodnie ze spec Szczepana,
+  // Subtitle z wkleconego CMS (jak był) - normalizujemy do <strong> zgodnie ze spec Szczepana,
   // żeby nawet stare span.subtitle dawały spójny output w nowym formacie.
   const subtitleHtml = product.subtitle
     ? `<br><a href="${escapeHtml(product.url)}"><strong>${escapeHtml(product.subtitle)}</strong></a>`
@@ -1589,6 +1593,9 @@ ${wrapper}`;
 
 // === MAIN APP ===
 export default function App() {
+  // v4.0: dwa moduły w jednej aplikacji. "format" = dotychczasowe Formatowanie,
+  // "generator" = generacja artykułów z promptów (Etap 1: Sklep/Edukacyjny).
+  const [activeModule, setActiveModule] = useState("format");
   const [step, setStep] = useState("input");
   const [input, setInput] = useState("");
   const [products, setProducts] = useState([]);
@@ -1601,7 +1608,7 @@ export default function App() {
 
   const handleAnalyze = async () => {
     const found = parseProducts(input);
-    // v3.8 — ŚCIEŻKA EDUKACYJNA. Artykuł bez produktów (poradnik, treść ekspercka) to
+    // v3.8 - ŚCIEŻKA EDUKACYJNA. Artykuł bez produktów (poradnik, treść ekspercka) to
     // pełnoprawny przypadek: dostaje TOC, cleanup artefaktów i FAQ (JSON do pola CMS),
     // czyli wszystko co buduje widoczność SEO/AIO, tylko bez boxów i ItemList.
     // "empty" zostaje wyłącznie dla pustego inputu.
@@ -1626,7 +1633,7 @@ export default function App() {
         setProgress({ current: i + 1, total: found.length });
         const result = await runOne(found[i]);
         if (result?.status === "ready") generatedBoxes[found[i].url] = result;
-        // Gap między boxami — rozkłada calls w czasie żeby nie kumulować rate limitu po stronie Workera/Anthropic.
+        // Gap między boxami - rozkłada calls w czasie żeby nie kumulować rate limitu po stronie Workera/Anthropic.
         // Dla 4 produktów dodaje ~6s, ale dramatycznie zmniejsza szansę padu po 3-4 boxach.
         if (i < found.length - 1) {
           await new Promise(r => setTimeout(r, 2000));
@@ -1643,7 +1650,7 @@ export default function App() {
       }
     }
 
-    // FAQ generuje się zawsze gdy jest treść — także w ścieżce edukacyjnej (v3.8).
+    // FAQ generuje się zawsze gdy jest treść - także w ścieżce edukacyjnej (v3.8).
     // Dla artykułów bez produktów kontekstem jest TOC + fragment treści artykułu.
     setFaqStatus("loading");
     try {
@@ -1688,7 +1695,7 @@ export default function App() {
     try {
       liveStatuses = await checkLinksLive([...allSlugs]);
     } catch (e) {
-      // Worker bez /check-link albo inny problem sieciowy — graceful: dorzuć warning do każdego boxa,
+      // Worker bez /check-link albo inny problem sieciowy - graceful: dorzuć warning do każdego boxa,
       // ale nie modyfikuj related. Robert zobaczy ostrzeżenie i będzie wiedział że trzeba wdrożyć Worker.
       const reason = e.message || String(e);
       setBoxes(prev => {
@@ -1719,7 +1726,7 @@ export default function App() {
 
         const alive = box.related.filter(r => !dead.includes(r));
         const deadList = dead.map(r => r.slug).join(", ");
-        // Bez `html` — derywowane live przez komponenty
+        // Bez `html` - derywowane live przez komponenty
         next[product.url] = {
           ...box,
           related: alive,
@@ -1734,7 +1741,7 @@ export default function App() {
     setBoxes(prev => ({ ...prev, [product.url]: { status: "loading" } }));
     try {
       const data = await generateBoxData(product);
-      // Nie cache'ujemy `html` w state — HTML jest derywowany live z danych przez useMemo
+      // Nie cache'ujemy `html` w state - HTML jest derywowany live z danych przez useMemo
       // w komponencie. Zmiana funkcji buildBoxHTML w deployu automatycznie aktualizuje markup
       // bez ponownego wywoływania API. State trzyma tylko surowe dane: forWho, whyWorth, related.
       const boxState = { status: "ready", ...data };
@@ -1759,7 +1766,7 @@ export default function App() {
     setFaqError(null);
   };
 
-  // v3.8: ścieżka edukacyjna (0 produktów) też jest "ready" — pełny artykuł dostępny
+  // v3.8: ścieżka edukacyjna (0 produktów) też jest "ready" - pełny artykuł dostępny
   // od razu (TOC + cleanup), bez czekania na boxy których nie ma.
   const allReady = products.length === 0
     ? step === "results"
@@ -1770,7 +1777,9 @@ export default function App() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
         body { background: #faf8f4; }
-        .display-font { font-family: 'Fraunces', Georgia, serif; font-feature-settings: 'ss01'; }
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+        .display-font { font-family: 'Montserrat', 'IBM Plex Sans', system-ui, sans-serif; }
+        .spin { animation: spin 1s linear infinite; }
         .mono-font { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
@@ -1789,15 +1798,31 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.8 · fix nazw produktów + ścieżka edukacyjna (artykuły bez produktów)
+                v4.0-e1 · moduł Generator (sklep/edukacyjny) + design system
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
-              Wklej artykuł — dostaniesz boxy produktowe z powiązaniami z bazy {CATEGORIES.length} kategorii
+              {activeModule === "format"
+                ? `Wklej artykuł - dostaniesz boxy produktowe z powiązaniami z bazy ${CATEGORIES.length} kategorii`
+                : "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"}
             </p>
           </div>
           <div style={{ flex: 1 }} />
-          {step !== "input" && (
+          {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
+          <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
+            {[["format", "Formatowanie"], ["generator", "Generator"]].map(([key, label]) => (
+              <button key={key} onClick={() => setActiveModule(key)}
+                style={{
+                  border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
+                  fontSize: 12.5, fontWeight: 600, fontFamily: theme.font.heading,
+                  background: activeModule === key ? theme.color.accent : "transparent",
+                  color: "#1d1d1b", transition: "all 0.18s ease",
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {activeModule === "format" && step !== "input" && (
             <button onClick={handleReset} style={btnSecondary}>
               <FileText size={14} /> Nowy artykuł
             </button>
@@ -1806,9 +1831,12 @@ export default function App() {
       </header>
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px 80px" }}>
-        {step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
-        {step === "empty" && <EmptyView onBack={handleReset} />}
-        {step === "results" && (
+        {activeModule === "generator" && (
+          <Generator shared={{ normalizeDashes, buildFaqCmsJson, buildCompleteArticle, extractTocItems, generateFAQ }} />
+        )}
+        {activeModule === "format" && step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
+        {activeModule === "format" && step === "empty" && <EmptyView onBack={handleReset} />}
+        {activeModule === "format" && step === "results" && (
           <ResultsView
             products={products}
             boxes={boxes}
@@ -1844,7 +1872,7 @@ function InputView({ input, setInput, onAnalyze }) {
         <p style={{ fontSize: 14, color: "#3a4a3a", marginTop: 10, lineHeight: 1.6 }}>
           Wkleić można pełny HTML wpisu blogowego ze sklepu lub fragment z linkami produktowymi.
           Narzędzie wykryje wszystkie produkty po wzorcu URL <code className="mono-font" style={inlineCode}>/p-XXX.html</code>,
-          a następnie dla każdego z nich wygeneruje box korzyści z propozycją 3 powiązań — wybranych ze 156 kategorii znajdujących się w bazie sklepu.
+          a następnie dla każdego z nich wygeneruje box korzyści z propozycją 3 powiązań - wybranych ze 156 kategorii znajdujących się w bazie sklepu.
         </p>
       </div>
 
@@ -1970,7 +1998,7 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
             {progress
               ? `Generowanie boxów: ${progress.current} / ${progress.total}`
               : allReady
-                ? `Wszystko gotowe — pełny artykuł zawiera spis treści (${tocItems.length} pytań) i ${products.length} boxów`
+                ? `Wszystko gotowe - pełny artykuł zawiera spis treści (${tocItems.length} pytań) i ${products.length} boxów`
                 : "Ładowanie..."}
           </p>
         </div>
@@ -1988,7 +2016,7 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
         </div>
       )}
 
-      <SectionHeader title="Spis treści" subtitle="Wyciągnięty z H2 i FAQ artykułu — możesz edytować przed kopiowaniem" />
+      <SectionHeader title="Spis treści" subtitle="Wyciągnięty z H2 i FAQ artykułu - możesz edytować przed kopiowaniem" />
       <TocCard items={tocItems} setItems={setTocItems} />
 
       {products.length > 0 ? (
@@ -2008,14 +2036,14 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
         </>
       ) : (
         <div style={{ marginTop: 28, padding: "14px 18px", background: "#eef4ee", border: "1px solid #cfe0cf", borderRadius: 10, fontSize: 13.5, color: "#2d4a2d" }}>
-          <strong>Tryb edukacyjny</strong> — nie wykryto produktów w artykule. Studio przygotuje spis treści,
+          <strong>Tryb edukacyjny</strong> - nie wykryto produktów w artykule. Studio przygotuje spis treści,
           cleanup kodu i sekcję Q&amp;A (JSON do pola CMS). Boxy produktowe i ItemList są pomijane.
         </div>
       )}
 
       <SectionHeader
         title="Q&A - często zadawane pytania"
-        subtitle="6 pytań i odpowiedzi wygenerowanych dla artykułu — możesz edytować przed kopiowaniem. UWAGA: od v3.5 FAQ NIE jest wstawiane do treści. Skopiuj JSON i wklej do pola CMS 'FAQ (dane strukturalne)', inaczej wpis zostanie opublikowany BEZ sekcji FAQ."
+        subtitle="6 pytań i odpowiedzi wygenerowanych dla artykułu - możesz edytować przed kopiowaniem. UWAGA: od v3.5 FAQ NIE jest wstawiane do treści. Skopiuj JSON i wklej do pola CMS 'FAQ (dane strukturalne)', inaczej wpis zostanie opublikowany BEZ sekcji FAQ."
         extraTop={28}
       />
       <FaqCard
@@ -2028,7 +2056,7 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
 
       {allReady && (
         <>
-          <SectionHeader title="Pełny artykuł" subtitle="Twój artykuł z wstawionym spisem treści i podmienionymi boxami — kopiuj lub pobierz jako plik" extraTop={28} />
+          <SectionHeader title="Pełny artykuł" subtitle="Twój artykuł z wstawionym spisem treści i podmienionymi boxami - kopiuj lub pobierz jako plik" extraTop={28} />
           <FullArticleCard
             html={fullArticleHtml}
             onCopy={() => copyText(fullArticleHtml, setCopiedAll)}
@@ -2156,7 +2184,7 @@ function FaqCard({ items, setItems, status, error, onRegenerate }) {
   const addItem = () => setItems([...items, { q: "", a: "" }]);
 
   const html = useMemo(() => buildFaqHTML(items), [items]);
-  // v3.5: JSON dla pola "FAQ (dane strukturalne)" w CMS — to jest teraz GŁÓWNY output FAQ.
+  // v3.5: JSON dla pola "FAQ (dane strukturalne)" w CMS - to jest teraz GŁÓWNY output FAQ.
   const cmsJson = useMemo(() => buildFaqCmsJson(items), [items]);
 
   const copyText = async (text, setFlag) => {
@@ -2178,7 +2206,7 @@ function FaqCard({ items, setItems, status, error, onRegenerate }) {
   const copyFaq = () => copyText(html, setCopied);
   const copyJson = () => copyText(cmsJson, setCopiedJson);
 
-  // Loading state — boxy jeszcze się generują, FAQ czeka albo właśnie się generuje
+  // Loading state - boxy jeszcze się generują, FAQ czeka albo właśnie się generuje
   if (status === "loading") {
     return (
       <div style={{ background: "#fff", border: "1px solid #e8e4dc", borderRadius: 12, padding: 22, color: "#5b6b5b", fontSize: 13, display: "flex", alignItems: "center", gap: 10 }}>
@@ -2315,27 +2343,27 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState(null);
 
-  // Edycja inline kodu artykułu. `editedHtml` to override — gdy null, używamy props.html (auto-wygenerowany).
+  // Edycja inline kodu artykułu. `editedHtml` to override - gdy null, używamy props.html (auto-wygenerowany).
   // Gdy user edytuje w textarea, ustawiamy editedHtml na to co napisał. Wszystko poniżej (preview, linki,
   // kopiowanie, pobieranie) konsumuje `displayHtml`, więc zmiany kaskadują automatycznie.
   const [editedHtml, setEditedHtml] = useState(null);
   const [copiedDisplay, setCopiedDisplay] = useState(false);
 
-  // Ref na div w tabie "Podgląd" — używamy go żeby ustawić innerHTML imperatywnie (z useEffect),
+  // Ref na div w tabie "Podgląd" - używamy go żeby ustawić innerHTML imperatywnie (z useEffect),
   // zamiast przez React VDOM. ContentEditable + React = konflikt: jeśli React renderuje przez
   // dangerouslySetInnerHTML przy każdej zmianie state, kursor gubi się w środku edycji.
   // Trick: ustawiamy innerHTML TYLKO gdy zmienia się "źródłowy" HTML (auto-regeneracja parenta)
   // albo wyniki walidacji linków (żeby highlighty się aktualizowały).
-  // NIE odpalamy useEffect po onInput — przez deps liczymy tylko [html, liveStatuses, tab].
+  // NIE odpalamy useEffect po onInput - przez deps liczymy tylko [html, liveStatuses, tab].
   const previewRef = useRef(null);
 
   const handlePreviewInput = (e) => {
-    // Złap edycje user'a z contentEditable div'u — innerHTML reprezentuje aktualny stan DOM
+    // Złap edycje user'a z contentEditable div'u - innerHTML reprezentuje aktualny stan DOM
     // po wszystkich zmianach (wpisaniu, usunięciu, paste). Ustawiamy jako override.
     setEditedHtml(e.currentTarget.innerHTML);
   };
 
-  // Gdy parent zregeneruje (zmieni props.html — np. po regeneracji boxa albo edycji TOC/FAQ),
+  // Gdy parent zregeneruje (zmieni props.html - np. po regeneracji boxa albo edycji TOC/FAQ),
   // resetujemy edycje, żeby nie utknąć na przestarzałej edytowanej wersji.
   useEffect(() => {
     setEditedHtml(null);
@@ -2355,13 +2383,13 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
   );
   const totalIssues = localMissingCount + liveBrokenCount;
 
-  // Highlighted preview HTML — recomputed when statuses or edits change
+  // Highlighted preview HTML - recomputed when statuses or edits change
   const previewHtml = useMemo(
     () => highlightBrokenLinks(displayHtml, links, liveStatuses),
     [displayHtml, links, liveStatuses]
   );
 
-  // Synchronizacja innerHTML w divie podglądu — TYLKO gdy zmienia się "źródło" (regeneracja przez parent,
+  // Synchronizacja innerHTML w divie podglądu - TYLKO gdy zmienia się "źródło" (regeneracja przez parent,
   // wynik walidacji linków, wejście w tab "Podgląd"). NIE robi tego przy każdym onInput, żeby kursor nie skakał.
   // Jeśli zaktualizowalibyśmy innerHTML w odpowiedzi na każdą edycję, React/browser remountowałby DOM
   // i tracilibyśmy pozycję kursora po każdym znaku.
@@ -2369,13 +2397,13 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
     if (tab !== "preview") return;
     if (!previewRef.current) return;
     // Tylko jeśli to faktycznie INNA treść niż aktualnie w divie. Daje to nam dwie ochrony:
-    // (a) gdy useEffect odpala z powodu zmiany w liveStatuses ale highlight wyszedł identyczny — nie resetuj
-    // (b) gdy odpala z powodu remount tabu — wczytaj świeże previewHtml (z highlightami jeśli są)
+    // (a) gdy useEffect odpala z powodu zmiany w liveStatuses ale highlight wyszedł identyczny - nie resetuj
+    // (b) gdy odpala z powodu remount tabu - wczytaj świeże previewHtml (z highlightami jeśli są)
     if (previewRef.current.innerHTML !== previewHtml) {
       previewRef.current.innerHTML = previewHtml;
     }
   }, [tab, html, liveStatuses]);
-  // ^ Krytyczne: tylko [tab, html, liveStatuses]. NIE [previewHtml, displayHtml, editedHtml] —
+  // ^ Krytyczne: tylko [tab, html, liveStatuses]. NIE [previewHtml, displayHtml, editedHtml] -
   // bo wtedy onInput user'a (ustawiający editedHtml) byłby cofany przez useEffect, kursor skakałby.
 
   const runLiveCheck = async () => {
@@ -2397,7 +2425,7 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
     }
   };
 
-  // Generic clipboard helper — używamy go dla wszystkich kopiowań w karcie
+  // Generic clipboard helper - używamy go dla wszystkich kopiowań w karcie
   const copyToClipboard = async (text, setFlag) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -2416,7 +2444,7 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
   const copyJustBoxes = () => copyToClipboard(boxesHtml, setCopiedBoxes);
   const copyDisplay = () => copyToClipboard(displayHtml, setCopiedDisplay);
 
-  // Pobieranie też ma używać displayHtml — jeśli user edytował, pobiera edycje, nie auto-wersję
+  // Pobieranie też ma używać displayHtml - jeśli user edytował, pobiera edycje, nie auto-wersję
   const downloadDisplay = () => {
     const blob = new Blob([displayHtml], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -2506,7 +2534,7 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
               border: "1px solid #f0e6c8", borderRadius: 6,
               fontSize: 12, color: "#6b6b5b"
             }}>
-              ✎ Zmiany ręczne aktywne — kopiuj/pobierz zawiera Twoje edycje
+              ✎ Zmiany ręczne aktywne - kopiuj/pobierz zawiera Twoje edycje
             </div>
           )}
         </div>
@@ -2780,7 +2808,7 @@ function ContainerStrip({ containers, catsConsidered, fallbackUsed }) {
     return (
       <span style={{ fontSize: 11, color: "#9a6e2a", display: "inline-flex", alignItems: "center", gap: 5 }}>
         <AlertCircle size={11} />
-        fallback — pełna lista {catsConsidered} kategorii
+        fallback - pełna lista {catsConsidered} kategorii
       </span>
     );
   }
