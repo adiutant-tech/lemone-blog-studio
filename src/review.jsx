@@ -21,6 +21,11 @@ export const GATE_CHECKS = [
   "Brak obietnic efektów i marketingowego zawyżania skuteczności",
 ];
 
+const S = {
+  labelRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  linkBtn: { ...ui.btnSecondary, padding: "3px 8px", fontSize: theme.size.small },
+};
+
 const STATUS = {
   pending:  { label: "Czeka na akceptację", tone: "warning" },
   changes:  { label: "Do poprawy",          tone: "danger" },
@@ -62,6 +67,23 @@ export function sanitizeHtml(html) {
     }
   });
   return d.body.innerHTML;
+}
+
+const escapeHtml = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const longDate = (iso) => iso ? new Date(iso).toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" }) : "";
+
+// Blok dołączany do artykułu po akceptacji (klinika): piśmiennictwo zatwierdzone przez lekarza
+// i podpis weryfikacji merytorycznej (sygnał E-E-A-T, działa bez danych strukturalnych).
+function buildPublishedBlock(published) {
+  if (!published) return "";
+  const list = (published.sources || []).filter(s => /^https?:\/\//i.test(s.url));
+  const refs = list.length
+    ? `<h2>Piśmiennictwo</h2>\n<ol>\n${list.map(s => `<li><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a></li>`).join("\n")}\n</ol>\n`
+    : "";
+  const sig = published.signature
+    ? `<p><em>Treść zweryfikowana merytorycznie: ${escapeHtml(published.signature)}, ${longDate(published.at)}.</em></p>`
+    : "";
+  return refs + sig;
 }
 
 export const reviewLink = (id) => `${window.location.origin}${window.location.pathname}#/akceptacja/${id}`;
@@ -223,7 +245,11 @@ function ReviewDetail({ id, shared, onBack }) {
   const [gate, setGate] = useState(GATE_CHECKS.map(() => false));
   const [editing, setEditing] = useState(false);
   const [viewV, setViewV] = useState(null); // numer wersji do podglądu; null = bieżąca
+  const [pubUrls, setPubUrls] = useState(() => new Set()); // źródła zaznaczone do publikacji
+  const [signature, setSignature] = useState("");
   const editorRef = useRef(null);
+  const sigKey = (name) => `lemone_review_sig_${name.trim().toLowerCase()}`;
+  useEffect(() => { if (me.trim()) setSignature(lsGet(sigKey(me), "")); }, [me]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = async () => {
     setError(null);
@@ -256,6 +282,14 @@ function ReviewDetail({ id, shared, onBack }) {
   };
   const lastApproval = [...r.history].reverse().find(h => h.action === "approved");
   const canCopy = !isKlinika || r.status === "approved";
+  const publishedBlock = r.status === "approved" ? buildPublishedBlock(r.published) : "";
+  const publishHtml = current.html + (publishedBlock ? "\n" + publishedBlock : "");
+  const sources = r.sources || [];
+  const togglePub = (url) => {
+    const next = new Set(pubUrls);
+    next.has(url) ? next.delete(url) : next.add(url);
+    setPubUrls(next);
+  };
 
   const act = async (path, body) => {
     if (!me.trim()) { setError("Wpisz swoje imię."); return; }
@@ -267,7 +301,16 @@ function ReviewDetail({ id, shared, onBack }) {
     } catch (e) { setError(e.message); }
     setBusy(false);
   };
-  const gateOk = !isKlinika || gate.every(Boolean);
+  const gateOk = !isKlinika || (gate.every(Boolean) && signature.trim());
+  const approve = () => {
+    if (isKlinika) lsSet(sigKey(me), signature.trim());
+    act("decision", {
+      decision: "approved", html: editedHtml(),
+      gate: isKlinika ? gate : undefined,
+      publishedSources: isKlinika ? sources.filter(s => pubUrls.has(s.url)) : undefined,
+      signature: isKlinika ? signature.trim() : undefined,
+    });
+  };
 
   return (
     <div className="fade-in" style={{ display: "grid", gridTemplateColumns: "minmax(320px, 400px) 1fr", gap: theme.space(3), alignItems: "start" }}>
@@ -320,12 +363,36 @@ function ReviewDetail({ id, shared, onBack }) {
                         {c}
                       </label>
                     ))}
+
+                    {sources.length > 0 && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={S.labelRow}>
+                          <label style={ui.label}>Piśmiennictwo do publikacji ({pubUrls.size}/{sources.length})</label>
+                          <button onClick={() => setPubUrls(pubUrls.size === sources.length ? new Set() : new Set(sources.map(s => s.url)))} style={S.linkBtn}>
+                            {pubUrls.size === sources.length ? "Odznacz wszystkie" : "Zaznacz wszystkie"}
+                          </button>
+                        </div>
+                        <p style={{ ...ui.help, marginTop: 0 }}>Zaznacz tylko źródła sprawdzone: trafią na koniec artykułu jako sekcja „Piśmiennictwo”.</p>
+                        <div style={{ maxHeight: 220, overflow: "auto" }} className="scroll-thin">
+                          {sources.map(s => (
+                            <label key={s.url} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: theme.size.small + 0.5, margin: "5px 0", cursor: "pointer" }}>
+                              <input type="checkbox" checked={pubUrls.has(s.url)} onChange={() => togglePub(s.url)} />
+                              <span>{s.title} <a href={s.url} target="_blank" rel="noreferrer" style={{ color: theme.color.textMuted }}>(otwórz)</a></span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <label style={{ ...ui.label, marginTop: 12 }}>Podpis pod artykułem (wymagany)</label>
+                    <input value={signature} onChange={e => setSignature(e.target.value)} style={ui.input} placeholder="np. lek. Agnieszka Kowalska, dermatolog" />
+                    <p style={ui.help}>Pojawi się jako „Treść zweryfikowana merytorycznie: …, data”. Zapamiętywany dla Twojego imienia.</p>
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-                  <button disabled={busy || !gateOk || !me.trim()} onClick={() => act("decision", { decision: "approved", html: editedHtml(), gate: isKlinika ? gate : undefined })}
+                  <button disabled={busy || !gateOk || !me.trim()} onClick={approve}
                     style={{ ...ui.btnPrimary(P), ...(busy || !gateOk || !me.trim() ? ui.btnDisabled : {}) }}
-                    title={gateOk ? "" : "Potwierdź wszystkie punkty weryfikacji"}>
+                    title={gateOk ? "" : "Potwierdź wszystkie punkty weryfikacji i wpisz podpis"}>
                     <CheckCircle2 size={14} /> Akceptuję
                   </button>
                   <button disabled={busy || !comment.trim() || !me.trim()} onClick={() => act("decision", { decision: "changes", html: editedHtml() })}
@@ -351,7 +418,7 @@ function ReviewDetail({ id, shared, onBack }) {
       {/* ===== Prawa kolumna: treść, notatka ===== */}
       <div style={{ display: "grid", gap: theme.space(2) }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <CopyButton text={current.html} label="Kopiuj artykuł do CMS" primary profile={P} disabled={!canCopy}
+          <CopyButton text={publishHtml} label="Kopiuj artykuł do CMS" primary profile={P} disabled={!canCopy}
             title={canCopy ? "" : "Treść medyczna: kopiowanie po akceptacji"} />
           {!isKlinika && r.faqItems?.length > 0 && <CopyButton text={shared.buildFaqCmsJson(r.faqItems)} label="Kopiuj JSON FAQ" />}
           {r.note && <CopyButton text={r.note} label="Kopiuj notatkę dla lekarza" />}
@@ -373,6 +440,12 @@ function ReviewDetail({ id, shared, onBack }) {
           {!isCurrent && <p style={{ ...ui.help, margin: "0 0 10px" }}>Podgląd starszej wersji {shownVersion.v} ({shownVersion.by}, {fmt(shownVersion.at)}).</p>}
           <div ref={editorRef} contentEditable={editing} suppressContentEditableWarning
             style={{ fontSize: 14, lineHeight: 1.65, outline: "none" }} />
+          {publishedBlock && isCurrent && (
+            <div style={{ borderTop: `1px dashed ${theme.color.border}`, marginTop: 16, paddingTop: 8 }}>
+              <p style={{ ...ui.help, margin: "0 0 6px" }}>Dołączone przy akceptacji (jest w kopiowanym artykule):</p>
+              <div style={{ fontSize: 14, lineHeight: 1.65 }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(publishedBlock) }} />
+            </div>
+          )}
         </div>
 
         {r.note && (
