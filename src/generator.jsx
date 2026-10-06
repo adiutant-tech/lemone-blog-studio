@@ -13,7 +13,7 @@
 // tytuł produktu, link /p-*.html, zdjęcie) i przekazuje go do Formatowania przez
 // `onSendToFormat`. Boxy, karty H3, ItemList, TOC i FAQ robi dojrzały pipeline.
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, ShieldCheck, RotateCcw, Search } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { DZIEDZINY } from "./prompts/klinika.js";
@@ -108,16 +108,64 @@ const STYLE_BY_TYPE = {
 
 const guardFor = (typ) => typ === "klinika" ? GUARD_KLINIKA : GUARD_SKLEP;
 
+// Odczyt strumienia SSE z Messages API: odtwarza bloki treści i stop_reason tak, jakby
+// przyszła zwykła odpowiedź JSON (potrzebne m.in. do odesłania treści przy pause_turn).
+async function readMessageStream(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const blocks = [];
+  const partialJson = {};
+  let stopReason = null;
+  let buf = "";
+  const handle = (ev) => {
+    if (ev.type === "content_block_start") {
+      blocks[ev.index] = { ...ev.content_block };
+      if (ev.content_block.type === "text") blocks[ev.index].text = ev.content_block.text || "";
+    } else if (ev.type === "content_block_delta") {
+      const b = blocks[ev.index];
+      const d = ev.delta;
+      if (d.type === "text_delta") b.text += d.text;
+      else if (d.type === "input_json_delta") partialJson[ev.index] = (partialJson[ev.index] || "") + d.partial_json;
+      else if (d.type === "thinking_delta") b.thinking = (b.thinking || "") + d.thinking;
+      else if (d.type === "signature_delta") b.signature = d.signature;
+      else if (d.type === "citations_delta") b.citations = [...(b.citations || []), d.citation];
+    } else if (ev.type === "content_block_stop") {
+      if (partialJson[ev.index] !== undefined) {
+        try { blocks[ev.index].input = JSON.parse(partialJson[ev.index] || "{}"); } catch (e) { /* zostaje input ze startu */ }
+      }
+    } else if (ev.type === "message_delta") {
+      if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
+    } else if (ev.type === "error") {
+      throw new Error(`API stream: ${ev.error?.type || ""} ${ev.error?.message || ""}`.trim());
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buf.indexOf("\n\n")) !== -1) {
+      const chunk = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      const data = chunk.split("\n").filter(l => l.startsWith("data:")).map(l => l.slice(5).trim()).join("");
+      if (data) handle(JSON.parse(data));
+    }
+  }
+  return { content: blocks.filter(Boolean), stop_reason: stopReason };
+}
+
 // === Wywołanie modelu przez Workera (ten sam proxy co Formatowanie) ===
-// Worker ma limit max_tokens 8000. Ucięta odpowiedź (stop_reason "max_tokens") to błąd,
-// nie wynik: wcześniej redakcja po cichu gubiła końcówkę artykułu.
+// Zawsze streaming: Cloudflare zrywa połączenie (524), gdy odpowiedź nie ruszy w 100 s,
+// a Opus z web search potrafi myśleć dłużej. Worker ma limit max_tokens 8000.
+// Ucięta odpowiedź (stop_reason "max_tokens") to błąd, nie wynik: wcześniej redakcja
+// po cichu gubiła końcówkę artykułu.
 // Przy web search obsługujemy "pause_turn" (wznowienie) i zbieramy cytowane źródła.
 async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, search = false } = {}) {
   const messages = [{ role: "user", content }];
   const texts = [];
   const sources = new Map();
   for (let round = 0; round < 4; round++) {
-    const body = { model, max_tokens: maxTokens, messages };
+    const body = { model, max_tokens: maxTokens, messages, stream: true };
     if (effortLow) body.output_config = { effort: "low" };
     if (search) body.tools = [WEB_SEARCH_TOOL];
     const res = await fetch(apiUrl, {
@@ -129,11 +177,16 @@ async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, eff
       const t = await res.text().catch(() => "");
       throw new Error(`API ${res.status}: ${t.slice(0, 180)}`);
     }
-    const data = await res.json();
+    const data = await readMessageStream(res);
     for (const b of data.content || []) {
       if (b.type === "text") {
         texts.push(b.text);
         for (const c of b.citations || []) if (c.url) sources.set(c.url, c.title || c.url);
+      }
+      // web_search_20260209 filtruje wyniki w code execution i zwykle nie zwraca cytatów
+      // w tekście; jawne URL-e są w blokach wyników wyszukiwania (błąd = obiekt, nie lista).
+      if (b.type === "web_search_tool_result" && Array.isArray(b.content)) {
+        for (const r of b.content) if (r.url && !sources.has(r.url)) sources.set(r.url, r.title || r.url);
       }
     }
     if (data.stop_reason === "pause_turn") {
@@ -408,7 +461,7 @@ ${f.topic}
 FRAZA GŁÓWNA: ${f.keyword}
 ${materialsBlock(f, "MATERIAŁY REDAKCJI (punkt wyjścia; zweryfikuj je):")}
 
-ZWRÓĆ zwięzłe zaplecze (maks. ok. 900 słów), w punktach, pogrupowane według zagadnień tematu: mechanizm, rozpoznanie, leczenie, bezpieczeństwo. Przy każdej metodzie leczenia: jakość dowodów i status off-label. Zaznacz rozbieżności między źródłami i obszary niepewne. Bez wstępu i bez zakończenia.`;
+ZWRÓĆ zwięzłe zaplecze (maks. ok. 900 słów), w punktach, pogrupowane według zagadnień tematu: mechanizm, rozpoznanie, leczenie, bezpieczeństwo. Przy każdej metodzie leczenia: jakość dowodów i status off-label. Zaznacz rozbieżności między źródłami i obszary niepewne. Na końcu każdego punktu podaj w nawiasie adres URL źródła z wyników wyszukiwania, na którym się opierasz; punkt bez źródła oznacz "(bez źródła)". Bez wstępu i bez zakończenia.`;
 }
 
 function buildClinicFaqPrompt(f, outline, bodyText) {
@@ -432,6 +485,14 @@ ${GUARD_KLINIKA}
 ZWRÓĆ WYŁĄCZNIE JSON: [{"question":"...","answer":"..."}]`;
 }
 
+// Do notatki idą źródła, na które powołuje się zaplecze (URL przy punkcie), a nie wszystkie
+// wyniki wyszukiwania: pełna lista (40+) rozdmuchiwała notatkę ponad limit tokenów.
+function noteSources(research) {
+  if (!research) return [];
+  const cited = research.sources.filter(s => research.text.includes(s.url));
+  return (cited.length >= 3 ? cited : research.sources).slice(0, 25);
+}
+
 function buildDoctorNotePrompt(f, outline, bodyText, sources) {
   const list = sources.length
     ? sources.map((s, i) => `[${i + 1}] ${s.title} - ${s.url}`).join("\n")
@@ -444,7 +505,7 @@ ${f.topic}
 TREŚĆ PODSTRONY:
 ${bodyText.slice(0, 16000)}
 ${researchBlock(f)}
-ŹRÓDŁA Z WYSZUKIWANIA (jedyne, które wolno podać jako zweryfikowane):
+ŹRÓDŁA Z WYSZUKIWANIA (jedyne, które wolno podać; zaplecze ma przy punktach URL-e, na których model się oparł, i te podawaj przede wszystkim):
 ${list}
 
 STRUKTURA (HTML: <h3>, <p>, <ul><li>, opcjonalnie <table>):
@@ -454,7 +515,7 @@ STRUKTURA (HTML: <h3>, <p>, <ul><li>, opcjonalnie <table>):
 4. Twierdzenia do weryfikacji: konkretne zdania z treści, które lekarz musi potwierdzić, z krótkim uzasadnieniem
 5. Źródła: wyłącznie z listy powyżej, z numerem i adresem URL. Jeśli brakuje źródła dla ważnego twierdzenia, wpisz je w punkcie 4 jako "brak źródła". NIE dopisuj źródeł z pamięci.
 
-Pisz zwięźle, językiem lekarskim. ZWRÓĆ WYŁĄCZNIE HTML, bez markdown.`;
+Pisz zwięźle, językiem lekarskim, łącznie maks. ok. 700 słów. ZWRÓĆ WYŁĄCZNIE HTML, bez markdown.`;
 }
 
 // Kolejka jednostek pisania: intro, sekcje, a w rankingu otwarcie listy + karta na produkt.
@@ -541,6 +602,7 @@ export default function Generator({ shared, onSendToFormat }) {
   const [copiedArt, setCopiedArt] = useState(false);
   const [copiedFaq, setCopiedFaq] = useState(false);
   const [copiedNote, setCopiedNote] = useState(false);
+  const finishCache = useRef(null); // wyniki etapu końcowego do ponowienia bez powtórek
 
   // Bramka weryfikacji
   const [verifier, setVerifier] = useState(() => lsGet("lemone_kl_verifier", "Agnieszka"));
@@ -656,26 +718,37 @@ export default function Generator({ shared, onSendToFormat }) {
   const finishPipeline = async (parts, units) => {
     setPhase("finishing");
     const f = formData();
+    // Ponowienie po błędzie nie powtarza kroków, które już się udały (redakcja, FAQ)
+    const sig = parts.join("\n<!--unit-->\n") + `|redline:${redline}`;
+    if (finishCache.current?.sig !== sig) finishCache.current = { sig };
+    const cache = finishCache.current;
     try {
-      const edited = redline ? await redlineParts(parts, units, f) : parts;
+      if (cache.body === undefined) {
+        const edited = redline ? await redlineParts(parts, units, f) : parts;
+        cache.body = shared.normalizeDashes(edited.join("\n"));
+      }
       setProgress(null);
-      const body = shared.normalizeDashes(edited.join("\n"));
+      const body = cache.body;
       if (f.typ === "ranking") {
         const words = stripTags(body).split(/\s+/).filter(Boolean).length;
         setResult({ html: body, faqItems: [], words, draft: true });
       } else if (f.typ === "klinika") {
         const bodyText = stripTags(body);
         setProgress({ current: 1, total: 2, label: "FAQ i notatka dla lekarza" });
-        let faqItems = [];
-        try {
-          const j = parseJsonLoose(await callModel(buildClinicFaqPrompt(f, outline, bodyText), opts({ maxTokens: 4000, effortLow: true })));
-          faqItems = (Array.isArray(j) ? j : []).filter(x => x && x.question && x.answer)
-            .map(x => ({ question: shared.normalizeDashes(x.question), answer: shared.normalizeDashes(x.answer) }));
-        } catch (e) { setWarning(`FAQ nie powstało (${e.message}); podstrona bez FAQ.`); }
+        if (cache.faqItems === undefined) {
+          let faqItems = [];
+          try {
+            const j = parseJsonLoose(await callModel(buildClinicFaqPrompt(f, outline, bodyText), opts({ maxTokens: 4000, effortLow: true })));
+            faqItems = (Array.isArray(j) ? j : []).filter(x => x && x.question && x.answer)
+              .map(x => ({ question: shared.normalizeDashes(x.question), answer: shared.normalizeDashes(x.answer) }));
+          } catch (e) { setWarning(`FAQ nie powstało (${e.message}); podstrona bez FAQ.`); }
+          cache.faqItems = faqItems;
+        }
+        const faqItems = cache.faqItems;
         const html = body + (faqItems.length ? "\n" + buildInlineFaq(faqItems) : "");
         setProgress({ current: 2, total: 2, label: "FAQ i notatka dla lekarza" });
-        const sources = research?.sources || [];
-        const note = shared.normalizeDashes(stripFences(await callModel(buildDoctorNotePrompt(f, outline, bodyText, sources), opts({ maxTokens: 8000 }))));
+        const sources = noteSources(research);
+        const note = shared.normalizeDashes(stripFences(await callModel(buildDoctorNotePrompt(f, outline, bodyText, sources), opts({ maxTokens: 8000, effortLow: true }))));
         const words = stripTags(html).split(/\s+/).filter(Boolean).length;
         setGate(GATE_CHECKS.map(() => false));
         setVerified(null);
@@ -714,6 +787,7 @@ export default function Generator({ shared, onSendToFormat }) {
 
   const resetAll = () => {
     setPhase("form"); setOutline(null); setSecHtml([]); setResult(null); setResearch(null);
+    finishCache.current = null;
     setError(null); setWarning(null); setProgress(null); setFailed(false);
     setVerified(null); setGate(GATE_CHECKS.map(() => false));
   };
@@ -929,7 +1003,7 @@ export default function Generator({ shared, onSendToFormat }) {
             <div style={{ ...ui.card, display: "flex", alignItems: "center", gap: 10 }}>
               {phase === "research" ? <Search size={16} color={P.accentHover} /> : <Loader2 size={16} className="spin" color={P.accentHover} />}
               <span style={{ fontSize: theme.size.body }}>
-                {phase === "research" ? "Zbieram zaplecze merytoryczne ze źródeł (web search, do 1-2 min)..." : "Buduję konspekt..."}
+                {phase === "research" ? "Zbieram zaplecze merytoryczne ze źródeł (web search, zwykle 1-3 min)..." : "Buduję konspekt..."}
               </span>
             </div>
           )}
