@@ -14,8 +14,9 @@
 // `onSendToFormat`. Boxy, karty H3, ItemList, TOC i FAQ robi dojrzały pipeline.
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, ShieldCheck, RotateCcw, Search } from "lucide-react";
+import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, RotateCcw, Search } from "lucide-react";
 import theme, { ui } from "./theme.js";
+import { SendForReview } from "./review.jsx"; // bramka weryfikacji jest u akceptującego (v4.1)
 import { DZIEDZINY } from "./prompts/klinika.js";
 
 const apiUrl = import.meta.env.VITE_API_URL || "https://api.anthropic.com/v1/messages";
@@ -49,15 +50,6 @@ const TYPES = {
   ranking:     { label: "Ranking",     redlineDefault: true,  sectionWords: "120-220" },
   klinika:     { label: "Strona kliniki", redlineDefault: true, sectionWords: "200-350" },
 };
-
-// Bramka weryfikacji merytorycznej (Etap 3): wszystkie punkty muszą być potwierdzone
-const GATE_CHECKS = [
-  "Fakty medyczne zgodne z aktualną wiedzą i wytycznymi",
-  "Leki: wskazania, przeciwwskazania, działania niepożądane i oznaczenia off-label poprawne",
-  "Ciąża, karmienie i grupy szczególne opisane bezpiecznie (lub nie dotyczy)",
-  "Źródła z notatki sprawdzone; twierdzenia oznaczone do weryfikacji rozstrzygnięte",
-  "Brak obietnic efektów i marketingowego zawyżania skuteczności",
-];
 
 // === Warstwa 1 anti-slop: zawsze w promptach (specyfikacja 3D) ===
 const ANTI_SLOP = `ZASADY STYLU (bezwzględne):
@@ -539,12 +531,6 @@ const unitLabel = (u) => ({
   product: `produkt ${u.rank}: ${u.product?.name}`,
 }[u.kind]);
 
-const nowStamp = () => {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-};
-
 // === Komponent ===
 export default function Generator({ shared, onSendToFormat }) {
   // Krok A: formularz
@@ -603,11 +589,6 @@ export default function Generator({ shared, onSendToFormat }) {
   const [copiedFaq, setCopiedFaq] = useState(false);
   const [copiedNote, setCopiedNote] = useState(false);
   const finishCache = useRef(null); // wyniki etapu końcowego do ponowienia bez powtórek
-
-  // Bramka weryfikacji
-  const [verifier, setVerifier] = useState(() => lsGet("lemone_kl_verifier", "Agnieszka"));
-  const [gate, setGate] = useState(GATE_CHECKS.map(() => false));
-  const [verified, setVerified] = useState(null); // {by, at}
 
   const productsOk = !isRanking || (parsedProducts.items.length >= MIN_RANKING_PRODUCTS && parsedProducts.errors.length === 0);
   const canStart = topic.trim() && keyword.trim() && productsOk;
@@ -750,8 +731,6 @@ export default function Generator({ shared, onSendToFormat }) {
         const sources = noteSources(research);
         const note = shared.normalizeDashes(stripFences(await callModel(buildDoctorNotePrompt(f, outline, bodyText, sources), opts({ maxTokens: 8000, effortLow: true }))));
         const words = stripTags(html).split(/\s+/).filter(Boolean).length;
-        setGate(GATE_CHECKS.map(() => false));
-        setVerified(null);
         setResult({ html, faqItems, words, draft: false, note, sources });
       } else {
         // Normalizacja całości (pipeline normalizuje FAQ i boxy, body artykułu robimy tu)
@@ -789,15 +768,10 @@ export default function Generator({ shared, onSendToFormat }) {
     setPhase("form"); setOutline(null); setSecHtml([]); setResult(null); setResearch(null);
     finishCache.current = null;
     setError(null); setWarning(null); setProgress(null); setFailed(false);
-    setVerified(null); setGate(GATE_CHECKS.map(() => false));
   };
 
-  const approve = () => {
-    lsSet("lemone_kl_verifier", verifier.trim());
-    setVerified({ by: verifier.trim(), at: nowStamp() });
-  };
-  const gateReady = gate.every(Boolean) && verifier.trim();
-  const locked = isKlinika && result && !verified;
+  // Klinika: kopiowanie do CMS wyłącznie po akceptacji (zakładka Akceptacje)
+  const locked = isKlinika && !!result;
 
   // Mini-checklist jakości (specyfikacja: testy Etapu 1); w rankingu bez kart produktów
   const checks = useMemo(() => {
@@ -1124,8 +1098,9 @@ export default function Generator({ shared, onSendToFormat }) {
                   <strong>Szkic rankingu gotowy.</strong> Karty produktów są w formacie wklejki z CMS. Przekaż szkic do Formatowania: dołoży karty H3, boxy "Dla kogo / Dlaczego warto / Powiązane", ItemList, spis treści i FAQ (JSON do pola CMS).
                 </div>
               ) : isKlinika ? (
-                <div style={ui.banner(verified ? "info" : "warning")}>
-                  <strong>{verified ? `Zweryfikowano: ${verified.by}, ${verified.at}.` : "Treść medyczna: wymaga weryfikacji lekarza przed publikacją."}</strong>{" "}
+                <div style={ui.banner("warning")}>
+                  <strong>Treść medyczna: wymaga akceptacji lekarza przed publikacją.</strong>{" "}
+                  Wyślij ją do akceptacji poniżej; kopiowanie do CMS odblokuje się w zakładce Akceptacje po zatwierdzeniu.
                   FAQ jest w treści HTML (format bezpieczny, bez skryptów). Notatka dla lekarza nie trafia do treści.
                 </div>
               ) : (
@@ -1152,29 +1127,13 @@ export default function Generator({ shared, onSendToFormat }) {
                 </div>
               )}
 
-              {locked && (
-                <div style={{ ...ui.card, borderColor: theme.color.warning }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: theme.space(2) }}>
-                    <ShieldCheck size={16} color={P.accentHover} />
-                    <h3 style={{ fontSize: theme.size.h3 + 1, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Bramka weryfikacji merytorycznej</h3>
-                  </div>
-                  <p style={ui.help}>Kopiowanie treści odblokowuje się dopiero po potwierdzeniu wszystkich punktów przez lekarza. Najpierw przeczytaj notatkę dla lekarza poniżej.</p>
-                  {GATE_CHECKS.map((c, i) => (
-                    <label key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: theme.size.small + 1, margin: "8px 0", cursor: "pointer" }}>
-                      <input type="checkbox" checked={gate[i]} onChange={e => setGate(gate.map((g, gi) => gi === i ? e.target.checked : g))} />
-                      {c}
-                    </label>
-                  ))}
-                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginTop: 10 }}>
-                    <div style={{ flex: 1 }}>
-                      <label style={ui.label}>Weryfikuje</label>
-                      <input value={verifier} onChange={e => setVerifier(e.target.value)} style={ui.input} />
-                    </div>
-                    <button onClick={approve} disabled={!gateReady} style={{ ...ui.btnPrimary(P), ...(gateReady ? {} : ui.btnDisabled) }}>
-                      <ShieldCheck size={14} /> Zatwierdzam treść
-                    </button>
-                  </div>
-                </div>
+              {!result.draft && (
+                <SendForReview profile={P} payload={{
+                  kind: isKlinika ? "klinika" : "sklep",
+                  title: outline.chosenH1, topic, keyword,
+                  html: result.html, faqItems: result.faqItems,
+                  note: result.note || "", sources: result.sources || [],
+                }} />
               )}
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -1191,7 +1150,7 @@ export default function Generator({ shared, onSendToFormat }) {
                   <>
                     <button onClick={() => !locked && copyText(result.html, setCopiedArt)} disabled={locked}
                       style={{ ...ui.btnPrimary(P), ...(locked ? ui.btnDisabled : {}) }}
-                      title={locked ? "Najpierw weryfikacja lekarska" : ""}>
+                      title={locked ? "Treść medyczna: skopiujesz ją po akceptacji, w zakładce Akceptacje" : ""}>
                       {copiedArt ? <Check size={14} /> : <Copy size={14} />} {copiedArt ? "Skopiowano" : "Kopiuj pełny artykuł"}
                     </button>
                     {!isKlinika && (
