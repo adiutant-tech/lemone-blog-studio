@@ -1,5 +1,9 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { Copy, Check, FileText, Sparkles, AlertCircle, Loader2, RefreshCw, ChevronDown, ChevronRight, Package, Zap, Download, Plus, X } from "lucide-react";
+// v4.0: moduł Generator (osobny plik) + design system (specyfikacja v4.0-v2, sekcja 9).
+// Funkcje wspólne idą do Generatora PRZEZ PROPS (bez eksportów nazwanych i bez cyklu importów).
+import Generator from "./generator.jsx";
+import theme from "./theme.js";
 
 // === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) — REVERTED z 1149 do oryginału ===
 // Robert: nowe powiązania (gdy lista miała 1149) były gorsze jakościowo. Wracamy do 156 oryginalnych
@@ -1589,6 +1593,9 @@ ${wrapper}`;
 
 // === MAIN APP ===
 export default function App() {
+  // v4.0: dwa moduły w jednej aplikacji. "format" = dotychczasowe Formatowanie,
+  // "generator" = generacja artykułów z promptów (Etap 1: Sklep/Edukacyjny).
+  const [activeModule, setActiveModule] = useState("format");
   const [step, setStep] = useState("input");
   const [input, setInput] = useState("");
   const [products, setProducts] = useState([]);
@@ -1770,7 +1777,9 @@ export default function App() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
         body { background: #faf8f4; }
-        .display-font { font-family: 'Fraunces', Georgia, serif; font-feature-settings: 'ss01'; }
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+        .display-font { font-family: 'Montserrat', 'IBM Plex Sans', system-ui, sans-serif; }
+        .spin { animation: spin 1s linear infinite; }
         .mono-font { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
@@ -1789,15 +1798,31 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v3.8 · fix nazw produktów + ścieżka edukacyjna (artykuły bez produktów)
+                v4.0-e1 · moduł Generator (sklep/edukacyjny) + design system
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
-              Wklej artykuł — dostaniesz boxy produktowe z powiązaniami z bazy {CATEGORIES.length} kategorii
+              {activeModule === "format"
+                ? `Wklej artykuł — dostaniesz boxy produktowe z powiązaniami z bazy ${CATEGORIES.length} kategorii`
+                : "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"}
             </p>
           </div>
           <div style={{ flex: 1 }} />
-          {step !== "input" && (
+          {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
+          <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
+            {[["format", "Formatowanie"], ["generator", "Generator"]].map(([key, label]) => (
+              <button key={key} onClick={() => setActiveModule(key)}
+                style={{
+                  border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
+                  fontSize: 12.5, fontWeight: 600, fontFamily: theme.font.heading,
+                  background: activeModule === key ? theme.color.accent : "transparent",
+                  color: "#1d1d1b", transition: "all 0.18s ease",
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {activeModule === "format" && step !== "input" && (
             <button onClick={handleReset} style={btnSecondary}>
               <FileText size={14} /> Nowy artykuł
             </button>
@@ -1806,9 +1831,12 @@ export default function App() {
       </header>
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px 80px" }}>
-        {step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
-        {step === "empty" && <EmptyView onBack={handleReset} />}
-        {step === "results" && (
+        {activeModule === "generator" && (
+          <Generator shared={{ normalizeDashes, buildFaqCmsJson, buildCompleteArticle, extractTocItems, generateFAQ }} />
+        )}
+        {activeModule === "format" && step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
+        {activeModule === "format" && step === "empty" && <EmptyView onBack={handleReset} />}
+        {activeModule === "format" && step === "results" && (
           <ResultsView
             products={products}
             boxes={boxes}
