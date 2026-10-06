@@ -1606,13 +1606,15 @@ export default function App() {
   const [faqStatus, setFaqStatus] = useState("idle"); // idle | loading | ready | error
   const [faqError, setFaqError] = useState(null);
 
-  const handleAnalyze = async () => {
-    const found = parseProducts(input);
+  // v4.0-e2: opcjonalny HTML z zewnątrz (Generator, ścieżka ranking przekazuje szkic do Formatowania).
+  const handleAnalyze = async (override) => {
+    const src = typeof override === "string" ? override : input;
+    const found = parseProducts(src);
     // v3.8 - ŚCIEŻKA EDUKACYJNA. Artykuł bez produktów (poradnik, treść ekspercka) to
     // pełnoprawny przypadek: dostaje TOC, cleanup artefaktów i FAQ (JSON do pola CMS),
     // czyli wszystko co buduje widoczność SEO/AIO, tylko bez boxów i ItemList.
     // "empty" zostaje wyłącznie dla pustego inputu.
-    if (found.length === 0 && !(input || "").trim()) {
+    if (found.length === 0 && !(src || "").trim()) {
       setProducts([]);
       setStep("empty");
       return;
@@ -1622,7 +1624,7 @@ export default function App() {
     setFaqItems([]);
     setFaqStatus("idle");
     setFaqError(null);
-    const initialToc = extractTocItems(input);
+    const initialToc = extractTocItems(src);
     setTocItems(initialToc);
     setStep("results");
 
@@ -1654,7 +1656,7 @@ export default function App() {
     // Dla artykułów bez produktów kontekstem jest TOC + fragment treści artykułu.
     setFaqStatus("loading");
     try {
-      const items = await generateFAQ({ products: found, tocItems: initialToc, articleHtml: input });
+      const items = await generateFAQ({ products: found, tocItems: initialToc, articleHtml: src });
       setFaqItems(items);
       setFaqStatus("ready");
     } catch (e) {
@@ -1798,7 +1800,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.0-e1 · moduł Generator (sklep/edukacyjny) + design system
+                v4.0-e2 · Generator: lifestylowy + ranking
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1832,7 +1834,10 @@ export default function App() {
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px 80px" }}>
         {activeModule === "generator" && (
-          <Generator shared={{ normalizeDashes, buildFaqCmsJson, buildCompleteArticle, extractTocItems, generateFAQ }} />
+          <Generator
+            shared={{ normalizeDashes, buildFaqCmsJson, buildCompleteArticle, extractTocItems, generateFAQ }}
+            onSendToFormat={(html) => { setInput(html); setActiveModule("format"); handleAnalyze(html); }}
+          />
         )}
         {activeModule === "format" && step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
         {activeModule === "format" && step === "empty" && <EmptyView onBack={handleReset} />}
