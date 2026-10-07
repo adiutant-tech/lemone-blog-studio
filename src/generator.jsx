@@ -109,9 +109,12 @@ async function readMessageStream(res) {
   const blocks = [];
   const partialJson = {};
   let stopReason = null;
+  let usage = {};
   let buf = "";
   const handle = (ev) => {
-    if (ev.type === "content_block_start") {
+    if (ev.type === "message_start") {
+      usage = { ...(ev.message?.usage || {}) };
+    } else if (ev.type === "content_block_start") {
       blocks[ev.index] = { ...ev.content_block };
       if (ev.content_block.type === "text") blocks[ev.index].text = ev.content_block.text || "";
     } else if (ev.type === "content_block_delta") {
@@ -128,6 +131,7 @@ async function readMessageStream(res) {
       }
     } else if (ev.type === "message_delta") {
       if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
+      if (ev.usage) usage = { ...usage, ...ev.usage }; // output_tokens i server_tool_use są skumulowane
     } else if (ev.type === "error") {
       throw new Error(`API stream: ${ev.error?.type || ""} ${ev.error?.message || ""}`.trim());
     }
@@ -144,7 +148,40 @@ async function readMessageStream(res) {
       if (data) handle(JSON.parse(data));
     }
   }
-  return { content: blocks.filter(Boolean), stop_reason: stopReason };
+  return { content: blocks.filter(Boolean), stop_reason: stopReason, usage };
+}
+
+// === Koszt: cennik API (USD za 1M tokenów; zapis do cache 1,25x wejścia) ===
+// Szacunek z usage zwracanego przez API; web search 10 USD / 1000 wyszukiwań.
+const PRICES = {
+  "claude-opus-5-5":   { in: 4, out: 20, cacheRead: 0.20 },
+  "claude-sonnet-5-5": { in: 2, out: 10, cacheRead: 0.20 },
+  "claude-sonnet-4-6": { in: 3, out: 15, cacheRead: 0.30 },
+};
+const SEARCH_PRICE = 0.01;
+
+function usageCost(model, u) {
+  const p = PRICES[model] || PRICES["claude-opus-5-5"];
+  return ((u.input_tokens || 0) * p.in
+    + (u.cache_creation_input_tokens || 0) * p.in * 1.25
+    + (u.cache_read_input_tokens || 0) * p.cacheRead
+    + (u.output_tokens || 0) * p.out) / 1e6
+    + (u.server_tool_use?.web_search_requests || 0) * SEARCH_PRICE;
+}
+
+// Etapy, które zawsze idą na tańszy model (praca redakcyjna, nie twórcza)
+const STAGE_MODEL = { redakcja: "claude-sonnet-5-5", faq: "claude-sonnet-5-5" };
+
+// Prompt z częścią wspólną dla wielu wywołań: {cached, text}. Część wspólna dostaje
+// cache_control, więc kolejne sekcje płacą za nią ok. 10% ceny wejścia.
+function toContent(content) {
+  if (content && typeof content === "object" && !Array.isArray(content) && "cached" in content) {
+    return [
+      { type: "text", text: content.cached, cache_control: { type: "ephemeral" } },
+      { type: "text", text: content.text },
+    ];
+  }
+  return content;
 }
 
 // === Wywołanie modelu przez Workera (ten sam proxy co Formatowanie) ===
@@ -153,8 +190,9 @@ async function readMessageStream(res) {
 // Ucięta odpowiedź (stop_reason "max_tokens") to błąd, nie wynik: wcześniej redakcja
 // po cichu gubiła końcówkę artykułu.
 // Przy web search obsługujemy "pause_turn" (wznowienie) i zbieramy cytowane źródła.
-async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, search = false } = {}) {
-  const messages = [{ role: "user", content }];
+async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, search = false, stage = "inne", track } = {}) {
+  if (STAGE_MODEL[stage]) model = STAGE_MODEL[stage];
+  const messages = [{ role: "user", content: toContent(content) }];
   const texts = [];
   const sources = new Map();
   for (let round = 0; round < 4; round++) {
@@ -171,6 +209,7 @@ async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, eff
       throw new Error(`API ${res.status}: ${t.slice(0, 180)}`);
     }
     const data = await readMessageStream(res);
+    if (track) track({ stage, model, usd: usageCost(model, data.usage), usage: data.usage });
     for (const b of data.content || []) {
       if (b.type === "text") {
         texts.push(b.text);
@@ -362,10 +401,7 @@ H2: ${sec.h2}
 ${sec.h3 && sec.h3.length ? "H3 do użycia (wszystkie): " + sec.h3.join(" | ") : "Bez H3."}
 TEZA SEKCJI: ${sec.thesis}${f.typ === "klinika" ? "\nRealizuj wyłącznie tezę tej sekcji; nie uprzedzaj kolejnych sekcji." : ""}`;
   const tags = isIntro ? "<p>" : `<h2>, opcjonalnie <h3>,${f.typ === "klinika" ? " <table> (tylko gdy tabela realnie porządkuje treść)," : ""}`;
-  return `${articleContext(f, outline)}
-${prevExcerpt ? "\nKONIEC POPRZEDNIEJ SEKCJI (dla ciągłości; NIE powtarzaj tych treści):\n..." + prevExcerpt : ""}
-
-${header}
+  return { cached: sharedPrefix(f, outline), text: `${prevExcerpt ? "KONIEC POPRZEDNIEJ SEKCJI (dla ciągłości; NIE powtarzaj tych treści):\n..." + prevExcerpt + "\n\n" : ""}${header}
 
 WYMAGANIA:
 - Czysty HTML: ${tags} <p>, <strong>, <ul><li> (lista tylko jeśli konieczna)
@@ -373,35 +409,32 @@ WYMAGANIA:
 - Fraza główna w tej sekcji maksymalnie ${isIntro ? "1 raz" : "1 raz, a jeśli jest w H2, to w treści wcale"}
 - Bez odnośników, bez obrazków, bez FAQ, bez podsumowywania całości
 
+ZWRÓĆ WYŁĄCZNIE HTML sekcji, bez komentarzy i bez markdown.` };
+}
+
+// Część wspólna promptów sekcji (kontekst artykułu + zasady): identyczna dla wszystkich
+// sekcji jednego artykułu, więc idzie do cache (patrz toContent).
+function sharedPrefix(f, outline) {
+  return `${articleContext(f, outline)}
+
 ${ANTI_SLOP}
 
 ${STYLE_BY_TYPE[f.typ]}
 
-${guardFor(f.typ)}
-
-ZWRÓĆ WYŁĄCZNIE HTML sekcji, bez komentarzy i bez markdown.`;
+${guardFor(f.typ)}`;
 }
 
 function buildRankingIntroPrompt(f, outline, unit, prevExcerpt) {
-  return `${articleContext(f, outline)}
-${prevExcerpt ? "\nKONIEC POPRZEDNIEJ SEKCJI (dla ciągłości; NIE powtarzaj tych treści):\n..." + prevExcerpt : ""}
-
-Napisz OTWARCIE sekcji z listą produktów:
+  return { cached: sharedPrefix(f, outline), text: `${prevExcerpt ? "KONIEC POPRZEDNIEJ SEKCJI (dla ciągłości; NIE powtarzaj tych treści):\n..." + prevExcerpt + "\n\n" : ""}Napisz OTWARCIE sekcji z listą produktów:
 <h2>${unit.h2}</h2>
 i pod nim JEDEN akapit <p> (40-80 słów): co łączy produkty w zestawieniu i jak czytać listę. Nie opisuj jeszcze żadnego produktu.
 
-${ANTI_SLOP}
-
-${STYLE_BY_TYPE.ranking}
-
-ZWRÓĆ WYŁĄCZNIE HTML (<h2> + <p>), bez komentarzy i bez markdown.`;
+ZWRÓĆ WYŁĄCZNIE HTML (<h2> + <p>), bez komentarzy i bez markdown.` };
 }
 
 function buildProductPrompt(f, outline, unit) {
   const p = unit.product;
-  return `${articleContext(f, outline)}
-
-Napisz OPIS PRODUKTU w rankingu (pozycja ${unit.rank} z ${outline.products.length}).
+  return { cached: sharedPrefix(f, outline), text: `Napisz OPIS PRODUKTU w rankingu (pozycja ${unit.rank} z ${outline.products.length}).
 PRODUKT: ${p.name}${p.subtitle ? "\nPODTYTUŁ: " + p.subtitle : ""}
 ETYKIETA REDAKCJI (dla kogo / do czego): ${p.bestFor || "(brak, wywnioskuj ostrożnie z nazwy i podtytułu)"}
 ${p.notes ? "NOTATKI O PRODUKCIE (jedyne źródło faktów o składzie i działaniu):\n" + p.notes : "BRAK NOTATEK: nie wymieniaj żadnych konkretnych składników ani stężeń; opisz przeznaczenie wyłącznie na podstawie nazwy, podtytułu i etykiety."}
@@ -413,13 +446,7 @@ WYMAGANIA:
 - NIE używaj frazy głównej "${f.keyword}"
 - Bez wyliczanki "Dla kogo / Dlaczego warto": te boxy dokłada Formatowanie; tu wyłącznie proza
 
-${ANTI_SLOP}
-
-${STYLE_BY_TYPE.ranking}
-
-${GUARD_SKLEP}
-
-ZWRÓĆ WYŁĄCZNIE HTML (dwa <p>), bez komentarzy i bez markdown.`;
+ZWRÓĆ WYŁĄCZNIE HTML (dwa <p>), bez komentarzy i bez markdown.` };
 }
 
 // Redakcja sekcja po sekcji: każda odpowiedź mieści się w limicie Workera,
@@ -572,6 +599,25 @@ const unitLabel = (u) => ({
   product: `produkt ${u.rank}: ${u.product?.name}`,
 }[u.kind]);
 
+// Licznik kosztu przebiegu: suma i podział na etapy (szacunek z cennika API)
+const STAGE_LABEL = { "załączniki": "załączniki", "źródła": "źródła (web search)", konspekt: "konspekt", sekcje: "sekcje", redakcja: "redakcja (Sonnet 5.5)", faq: "FAQ (Sonnet 5.5)", notatka: "notatka" };
+function CostMeter({ costs, note }) {
+  if (!costs.length) return null;
+  const usd = (n) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const total = costs.reduce((s, c) => s + c.usd, 0);
+  const by = {};
+  for (const c of costs) by[c.stage] = (by[c.stage] || 0) + c.usd;
+  const cacheRead = costs.reduce((s, c) => s + (c.usage?.cache_read_input_tokens || 0), 0);
+  return (
+    <div style={{ ...ui.help, margin: "8px 0 0", color: theme.color.textSecondary }}>
+      <strong>Koszt przebiegu: {usd(total)} USD</strong> (szacunek wg cennika API)
+      {" · "}{Object.entries(by).map(([k, v]) => `${STAGE_LABEL[k] || k} ${usd(v)}`).join(" · ")}
+      {cacheRead > 0 && <> · z cache: {Math.round(cacheRead / 1000)} tys. tokenów</>}
+      {note && <> · {note}</>}
+    </div>
+  );
+}
+
 // === Komponent ===
 export default function Generator({ shared, onSendToFormat }) {
   // Krok A: formularz
@@ -642,7 +688,10 @@ export default function Generator({ shared, onSendToFormat }) {
     typ, promptMatka, keyword, keywordsAux, topic, materials, length,
     products: parsedProducts.items, research, ...extra,
   });
-  const opts = (o = {}) => ({ model, ...o });
+  // Licznik kosztu przebiegu (szacunek z usage API, per etap)
+  const [costs, setCosts] = useState([]);
+  const track = (e) => setCosts(c => [...c, e]);
+  const opts = (o = {}) => ({ model, track, ...o });
 
   const addFiles = async (fileList) => {
     setAttError(null);
@@ -678,7 +727,7 @@ export default function Generator({ shared, onSendToFormat }) {
     setAttError(null); setAttBusy(true);
     try {
       const todo = attachments.filter(a => !a.done);
-      const text = shared.normalizeDashes(await callModel(buildAttachmentsContent(formData(), todo), opts({ maxTokens: 8000 })));
+      const text = shared.normalizeDashes(await callModel(buildAttachmentsContent(formData(), todo), opts({ maxTokens: 8000, stage: "załączniki" })));
       setMaterials(prev => `${prev.trim() ? prev.trim() + "\n\n" : ""}=== WYCIĄG Z ZAŁĄCZNIKÓW ===\n${text.trim()}`);
       // Treść pliku nie jest już potrzebna: zostaje tylko wpis na liście
       setAttachments(attachments.map(a => todo.includes(a) ? { ...a, done: true, data: undefined } : a));
@@ -689,7 +738,7 @@ export default function Generator({ shared, onSendToFormat }) {
   const runResearch = async () => {
     setPhase("research");
     try {
-      const r = await callModel(buildResearchPrompt(formData()), opts({ maxTokens: 8000, search: true }));
+      const r = await callModel(buildResearchPrompt(formData()), opts({ maxTokens: 8000, search: true, stage: "źródła" }));
       setResearch(r);
       return r;
     } catch (e) {
@@ -706,7 +755,7 @@ export default function Generator({ shared, onSendToFormat }) {
       if (isKlinika && webSearch && !research) r = await runResearch();
       setPhase("outlineLoading");
       const f = formData({ research: r });
-      const txt = await callModel(buildOutlinePrompt(f), opts({ maxTokens: 6000, effortLow: true }));
+      const txt = await callModel(buildOutlinePrompt(f), opts({ maxTokens: 6000, effortLow: true, stage: "konspekt" }));
       const j = parseJsonLoose(txt);
       if (!j.h1?.length || !j.sections?.length) throw new Error("Konspekt niekompletny");
       let sections = j.sections;
@@ -730,13 +779,13 @@ export default function Generator({ shared, onSendToFormat }) {
     const f = formData();
     const prevExcerpt = prevHtml ? stripTags(prevHtml).slice(-300) : "";
     if (unit.kind === "product") {
-      const prose = stripFences(await callModel(buildProductPrompt(f, outline, unit), opts({ maxTokens: 3000 })));
+      const prose = stripFences(await callModel(buildProductPrompt(f, outline, unit), opts({ maxTokens: 3000, stage: "sekcje" })));
       return `<div class="product">${buildProductHead(unit.product)}\n${prose}\n</div>`;
     }
     const prompt = unit.kind === "rankingIntro"
       ? buildRankingIntroPrompt(f, outline, unit, prevExcerpt)
       : buildSectionPrompt(f, outline, unit, prevExcerpt);
-    return stripFences(await callModel(prompt, opts({ maxTokens: 6000 })));
+    return stripFences(await callModel(prompt, opts({ maxTokens: 6000, stage: "sekcje" })));
   };
 
   // Pisze jednostki od `parts.length` do końca; wspólne dla startu i ponowienia.
@@ -778,7 +827,7 @@ export default function Generator({ shared, onSendToFormat }) {
     for (let k = 0; k < todo.length; k++) {
       const i = todo[k];
       setProgress({ current: k + 1, total: todo.length, label: "Redakcja" });
-      out[i] = stripFences(await callModel(buildRedlinePrompt(parts[i], f), opts({ maxTokens: 6000, effortLow: true })));
+      out[i] = stripFences(await callModel(buildRedlinePrompt(parts[i], f), opts({ maxTokens: 6000, effortLow: true, stage: "redakcja" })));
       if (k < todo.length - 1) await new Promise(r => setTimeout(r, SECTION_GAP_MS));
     }
     return out;
@@ -807,7 +856,7 @@ export default function Generator({ shared, onSendToFormat }) {
         if (cache.faqItems === undefined) {
           let faqItems = [];
           try {
-            const j = parseJsonLoose(await callModel(buildClinicFaqPrompt(f, outline, bodyText), opts({ maxTokens: 4000, effortLow: true })));
+            const j = parseJsonLoose(await callModel(buildClinicFaqPrompt(f, outline, bodyText), opts({ maxTokens: 4000, effortLow: true, stage: "faq" })));
             faqItems = (Array.isArray(j) ? j : []).filter(x => x && x.question && x.answer)
               .map(x => ({ question: shared.normalizeDashes(x.question), answer: shared.normalizeDashes(x.answer) }));
           } catch (e) { setWarning(`FAQ nie powstało (${e.message}); podstrona bez FAQ.`); }
@@ -817,7 +866,7 @@ export default function Generator({ shared, onSendToFormat }) {
         const html = body + (faqItems.length ? "\n" + buildInlineFaq(faqItems) : "");
         setProgress({ current: 2, total: 2, label: "FAQ i notatka dla lekarza" });
         const sources = noteSources(research);
-        const note = shared.normalizeDashes(stripFences(await callModel(buildDoctorNotePrompt(f, outline, bodyText, sources), opts({ maxTokens: 8000, effortLow: true }))));
+        const note = shared.normalizeDashes(stripFences(await callModel(buildDoctorNotePrompt(f, outline, bodyText, sources), opts({ maxTokens: 8000, effortLow: true, stage: "notatka" }))));
         const words = stripTags(html).split(/\s+/).filter(Boolean).length;
         setResult({ html, faqItems, words, draft: false, note, sources });
       } else {
@@ -855,6 +904,7 @@ export default function Generator({ shared, onSendToFormat }) {
   const resetAll = () => {
     setPhase("form"); setOutline(null); setSecHtml([]); setResult(null); setResearch(null);
     finishCache.current = null;
+    setCosts([]);
     setError(null); setWarning(null); setProgress(null); setFailed(false);
   };
 
@@ -1216,6 +1266,7 @@ export default function Generator({ shared, onSendToFormat }) {
                   </div>
                 </div>
               )}
+              <CostMeter costs={costs} />
               {secHtml.length > 0 && (
                 <p style={{ ...ui.help, marginTop: 10 }}>Gotowe fragmenty: {secHtml.length}. Gap {SECTION_GAP_MS / 1000}s między wywołaniami (ochrona rate limit).</p>
               )}
@@ -1255,6 +1306,7 @@ export default function Generator({ shared, onSendToFormat }) {
                   <span style={ui.pill(checks.emDash === 0 ? theme.color.accentSoft : theme.color.dangerSoft, checks.emDash === 0 ? theme.color.text : theme.color.danger)}>em-dash: {checks.emDash}</span>
                   {!result.draft && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>FAQ: {checks.faq} pytań</span>}
                   {isKlinika && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>źródła: {result.sources?.length || 0}</span>}
+                  <div style={{ flexBasis: "100%" }}><CostMeter costs={costs} note={isKlinika || result.draft ? "" : "bez FAQ z Formatowania"} /></div>
                 </div>
               )}
 
