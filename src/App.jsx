@@ -3,7 +3,15 @@ import { Copy, Check, FileText, Sparkles, AlertCircle, Loader2, RefreshCw, Chevr
 // v4.0: moduł Generator (osobny plik) + design system (specyfikacja v4.0-v2, sekcja 9).
 // Funkcje wspólne idą do Generatora PRZEZ PROPS (bez eksportów nazwanych i bez cyklu importów).
 import Generator from "./generator.jsx";
+// v4.1: moduł Akceptacje (osobny plik; wspólne funkcje też przez props)
+import Reviews, { SendForReview } from "./review.jsx";
 import theme from "./theme.js";
+
+// Link do akceptacji: #/akceptacja/<id> (GitHub Pages bez routingu po ścieżce)
+const reviewIdFromHash = () => {
+  const m = window.location.hash.match(/^#\/akceptacja\/([A-Za-z0-9_-]{16})/);
+  return m ? m[1] : null;
+};
 
 // === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) - REVERTED z 1149 do oryginału ===
 // Robert: nowe powiązania (gdy lista miała 1149) były gorsze jakościowo. Wracamy do 156 oryginalnych
@@ -1595,7 +1603,19 @@ ${wrapper}`;
 export default function App() {
   // v4.0: dwa moduły w jednej aplikacji. "format" = dotychczasowe Formatowanie,
   // "generator" = generacja artykułów z promptów (Etap 1: Sklep/Edukacyjny).
-  const [activeModule, setActiveModule] = useState("format");
+  // v4.1: "akceptacje" = lista zgłoszeń i ekran akceptacji (link #/akceptacja/<id>)
+  const [activeModule, setActiveModule] = useState(() => reviewIdFromHash() ? "akceptacje" : "format");
+  const [reviewId, setReviewId] = useState(reviewIdFromHash);
+  useEffect(() => {
+    const onHash = () => {
+      const id = reviewIdFromHash();
+      setReviewId(id);
+      if (id) setActiveModule("akceptacje");
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const openReview = (id) => { window.location.hash = id ? `#/akceptacja/${id}` : "#/akceptacje"; setReviewId(id); };
   const [step, setStep] = useState("input");
   const [input, setInput] = useState("");
   const [products, setProducts] = useState([]);
@@ -1800,20 +1820,22 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.0-e3 · Generator: klinika (trychologia) + wybór modelu
+                v4.1 · Akceptacje artykułów (sklep i klinika)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
               {activeModule === "format"
                 ? `Wklej artykuł - dostaniesz boxy produktowe z powiązaniami z bazy ${CATEGORIES.length} kategorii`
-                : "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"}
+                : activeModule === "generator"
+                  ? "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"
+                  : "Artykuły wysłane do akceptacji: poprawki, decyzje, historia wersji"}
             </p>
           </div>
           <div style={{ flex: 1 }} />
           {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
           <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
-            {[["format", "Formatowanie"], ["generator", "Generator"]].map(([key, label]) => (
-              <button key={key} onClick={() => setActiveModule(key)}
+            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"]].map(([key, label]) => (
+              <button key={key} onClick={() => { setActiveModule(key); if (key === "akceptacje" && !reviewId) openReview(null); }}
                 style={{
                   border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
                   fontSize: 12.5, fontWeight: 600, fontFamily: theme.font.heading,
@@ -1833,11 +1855,16 @@ export default function App() {
       </header>
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px 80px" }}>
-        {activeModule === "generator" && (
+        {/* v4.1: Generator zostaje zamontowany (tylko ukryty), żeby przełączenie zakładki
+            nie kasowało wygenerowanego artykułu (wcześniej ginął przy przejściu do Formatowania). */}
+        <div style={{ display: activeModule === "generator" ? "block" : "none" }}>
           <Generator
             shared={{ normalizeDashes, buildFaqCmsJson, buildCompleteArticle, extractTocItems, generateFAQ }}
             onSendToFormat={(html) => { setInput(html); setActiveModule("format"); handleAnalyze(html); }}
           />
+        </div>
+        {activeModule === "akceptacje" && (
+          <Reviews shared={{ normalizeDashes, buildFaqCmsJson }} reviewId={reviewId} onOpen={openReview} />
         )}
         {activeModule === "format" && step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
         {activeModule === "format" && step === "empty" && <EmptyView onBack={handleReset} />}
@@ -2068,6 +2095,13 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
             copied={copiedAll}
             onDownload={downloadFullArticle}
             boxesHtml={allBoxesHtml}
+            reviewSlot={(displayHtml) => (
+              <SendForReview payload={{
+                kind: "sklep",
+                title: (displayHtml.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i)?.[1] || "").replace(/<[^>]+>/g, "").trim(),
+                html: displayHtml, faqItems,
+              }} />
+            )}
           />
         </>
       )}
@@ -2341,7 +2375,7 @@ function FaqCard({ items, setItems, status, error, onRegenerate }) {
   );
 }
 
-function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
+function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml, reviewSlot }) {
   const [tab, setTab] = useState("preview");
   const [copiedBoxes, setCopiedBoxes] = useState(false);
   const [liveStatuses, setLiveStatuses] = useState({}); // { url: { url, status, ok, error? } }
@@ -2597,6 +2631,7 @@ function FullArticleCard({ html, onCopy, copied, onDownload, boxesHtml }) {
           {copiedBoxes ? "Skopiowano boxy" : "Tylko boxy (do ręcznego wklejenia)"}
         </button>
       </div>
+      {reviewSlot && <div style={{ marginTop: 16 }}>{reviewSlot(displayHtml)}</div>}
     </div>
   );
 }
