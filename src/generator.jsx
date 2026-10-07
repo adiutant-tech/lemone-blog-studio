@@ -34,7 +34,15 @@ const MODELS = {
   "claude-sonnet-4-6": "Sonnet 4.6 (poprzedni)",
 };
 const DEFAULT_MODEL = "claude-opus-5-5";
-const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: 5 };
+const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search" };
+// Koszt źródeł zależy od liczby wyszukiwań (każde to ok. 10 wyników z treścią na wejściu modelu),
+// nie od długości listy źródeł; dlatego limit dotyczy wyszukiwań.
+const SEARCH_DEPTH = {
+  szybkie:  { label: "Źródła: szybkie (2 wyszukiwania)", uses: 2 },
+  standard: { label: "Źródła: standard (3 wyszukiwania)", uses: 3 },
+  pelne:    { label: "Źródła: pełne (5 wyszukiwań)", uses: 5 },
+};
+const NOTE_SOURCES_MAX = 20;
 
 // Długości artykułu: liczba sekcji H2 bez intro; w rankingu liczba sekcji poza listą produktów
 const LENGTHS = {
@@ -190,7 +198,7 @@ function toContent(content) {
 // Ucięta odpowiedź (stop_reason "max_tokens") to błąd, nie wynik: wcześniej redakcja
 // po cichu gubiła końcówkę artykułu.
 // Przy web search obsługujemy "pause_turn" (wznowienie) i zbieramy cytowane źródła.
-async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, search = false, stage = "inne", track } = {}) {
+async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, search = false, searchUses = 3, stage = "inne", track } = {}) {
   if (STAGE_MODEL[stage]) model = STAGE_MODEL[stage];
   const messages = [{ role: "user", content: toContent(content) }];
   const texts = [];
@@ -198,7 +206,7 @@ async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, eff
   for (let round = 0; round < 4; round++) {
     const body = { model, max_tokens: maxTokens, messages, stream: true };
     if (effortLow) body.output_config = { effort: "low" };
-    if (search) body.tools = [WEB_SEARCH_TOOL];
+    if (search) body.tools = [{ ...WEB_SEARCH_TOOL, max_uses: searchUses }];
     const res = await apiFetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -511,7 +519,7 @@ ZWRÓĆ WYŁĄCZNIE JSON: [{"question":"...","answer":"..."}]`;
 function noteSources(research) {
   if (!research) return [];
   const cited = research.sources.filter(s => research.text.includes(s.url));
-  return (cited.length >= 3 ? cited : research.sources).slice(0, 25);
+  return (cited.length >= 3 ? cited : research.sources).slice(0, NOTE_SOURCES_MAX);
 }
 
 function buildDoctorNotePrompt(f, outline, bodyText, sources) {
@@ -642,6 +650,7 @@ export default function Generator({ shared, onSendToFormat }) {
   const [redline, setRedline] = useState(TYPES.edukacyjny.redlineDefault);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [webSearch, setWebSearch] = useState(true);
+  const [searchDepth, setSearchDepth] = useState("standard");
 
   // Klinika: dziedzina (każda ma własny prompt matka)
   const [dziedzina, setDziedzina] = useState("trychologia");
@@ -738,7 +747,7 @@ export default function Generator({ shared, onSendToFormat }) {
   const runResearch = async () => {
     setPhase("research");
     try {
-      const r = await callModel(buildResearchPrompt(formData()), opts({ maxTokens: 8000, search: true, stage: "źródła" }));
+      const r = await callModel(buildResearchPrompt(formData()), opts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[searchDepth].uses, stage: "źródła" }));
       setResearch(r);
       return r;
     } catch (e) {
@@ -1127,6 +1136,11 @@ export default function Generator({ shared, onSendToFormat }) {
                   Zaplecze ze źródeł (web search)
                 </label>
               )}
+              {isKlinika && webSearch && (
+                <select value={searchDepth} onChange={e => setSearchDepth(e.target.value)} style={{ ...ui.input, padding: "5px 8px", fontSize: theme.size.small + 0.5 }} disabled={formLocked}>
+                  {Object.entries(SEARCH_DEPTH).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                </select>
+              )}
             </div>
           </div>
 
@@ -1238,6 +1252,7 @@ export default function Generator({ shared, onSendToFormat }) {
               <p style={ui.help}>
                 Wywołań modelu: {totalUnits}{redline ? ` + ${outline.sections.filter(s => s.kind !== "ranking").length + 1 + (isRanking ? 1 : 0)} redakcji` : ""}{isKlinika ? " + FAQ + notatka" : ""}, gap {SECTION_GAP_MS / 1000}s. Model: {MODELS[model]}.
               </p>
+              <CostMeter costs={costs} />
             </div>
           )}
 
