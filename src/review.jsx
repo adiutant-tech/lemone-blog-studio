@@ -110,6 +110,11 @@ function CopyButton({ text, label, primary = false, profile, disabled = false, t
   );
 }
 
+// Udostępnienie: link do zgłoszenia, wklejany przez autora np. w WhatsAppie
+export function ShareLink({ id }) {
+  return <CopyButton text={reviewLink(id)} label="Kopiuj link" />;
+}
+
 const statusPill = (status) => {
   const s = STATUS[status] || STATUS.pending;
   const bg = { warning: theme.color.warningSoft, danger: theme.color.dangerSoft, info: theme.color.accentSoft }[s.tone];
@@ -140,10 +145,12 @@ export function SendForReview({ payload, profile = theme.profile.sklep }) {
     const link = reviewLink(state.id);
     return (
       <div style={ui.banner("info")}>
-        <strong>Wysłano do akceptacji: {reviewer}.</strong> Prześlij ten link (mail, Slack):
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+        <strong>Zapisano do akceptacji: {reviewer}.</strong> Teraz wyślij jej link:
+        <div style={{ margin: "8px 0" }}>
           <code style={{ fontFamily: theme.font.mono, fontSize: 12, background: theme.color.surface, padding: "4px 8px", borderRadius: 6, wordBreak: "break-all" }}>{link}</code>
-          <CopyButton text={link} label="Kopiuj link" />
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <ShareLink id={state.id} />
           <a href={`#/akceptacja/${state.id}`} style={{ ...ui.btnSecondary, textDecoration: "none" }}><Link2 size={13} /> Otwórz</a>
         </div>
         <p style={{ ...ui.help, marginBottom: 0 }}>Status sprawdzisz w zakładce Akceptacje.</p>
@@ -330,6 +337,7 @@ function ReviewDetail({ id, shared, onBack }) {
             </p>
           )}
           {r.topic && <p style={{ ...ui.help, whiteSpace: "pre-wrap" }}><strong>Temat:</strong> {r.topic}</p>}
+          <div style={{ marginTop: 10 }}><ShareLink id={r.id} /></div>
         </div>
 
         <div style={ui.card}>
