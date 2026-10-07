@@ -10,6 +10,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Send, Copy, Check, RefreshCw, AlertCircle, Loader2, ShieldCheck, ArrowLeft, Pencil, Link2, CheckCircle2, Undo2 } from "lucide-react";
 import theme, { ui } from "./theme.js";
+import { apiFetch } from "./auth.jsx";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
@@ -39,7 +40,7 @@ const ACTION_LABEL = {
 };
 
 async function api(path, body) {
-  const res = await fetch(API + path, body
+  const res = await apiFetch(API + path, body
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
     : undefined);
   const j = await res.json().catch(() => ({}));

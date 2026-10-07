@@ -5,6 +5,8 @@ import { Copy, Check, FileText, Sparkles, AlertCircle, Loader2, RefreshCw, Chevr
 import Generator from "./generator.jsx";
 // v4.1: moduł Akceptacje (osobny plik; wspólne funkcje też przez props)
 import Reviews, { SendForReview } from "./review.jsx";
+// v4.2: logowanie Google (lista zaproszonych, role admin/edytor)
+import { apiFetch, useSession, AUTH_ENABLED, LoginView, UserBar, AdminUsers } from "./auth.jsx";
 import theme from "./theme.js";
 
 // Link do akceptacji: #/akceptacja/<id> (GitHub Pages bez routingu po ścieżce)
@@ -1134,7 +1136,7 @@ function extractArticleLinks(html) {
 // Expected response: { results: [{ url, status, ok }, ...] }
 async function checkLinksLive(urls) {
   if (!urls || urls.length === 0) return {};
-  const response = await fetch(LINK_CHECK_URL, {
+  const response = await apiFetch(LINK_CHECK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ urls })
@@ -1217,7 +1219,7 @@ async function fetchWithRetry(url, options, maxRetries = 5) {
   let lastResponse;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      lastResponse = await fetch(url, options);
+      lastResponse = await apiFetch(url, options);
     } catch (e) {
       // Network error - retry too, ale tylko raz (mogło być Failed to fetch / DNS hiccup)
       if (attempt === maxRetries) throw e;
@@ -1600,7 +1602,14 @@ ${wrapper}`;
 }
 
 // === MAIN APP ===
-export default function App() {
+// v4.2: bramka logowania przed aplikacją (osobny komponent, żeby nie łamać kolejności hooków)
+export default function Root() {
+  const { session, login, logout } = useSession();
+  if (AUTH_ENABLED && !session) return <LoginView onLogin={login} />;
+  return <App session={session} onLogout={logout} />;
+}
+
+function App({ session, onLogout }) {
   // v4.0: dwa moduły w jednej aplikacji. "format" = dotychczasowe Formatowanie,
   // "generator" = generacja artykułów z promptów (Etap 1: Sklep/Edukacyjny).
   // v4.1: "akceptacje" = lista zgłoszeń i ekran akceptacji (link #/akceptacja/<id>)
@@ -1820,7 +1829,7 @@ export default function App() {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.1 · Akceptacje artykułów (sklep i klinika)
+                v4.2 · Załączniki (PDF, obrazy, YouTube) + logowanie Google
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1828,13 +1837,15 @@ export default function App() {
                 ? `Wklej artykuł - dostaniesz boxy produktowe z powiązaniami z bazy ${CATEGORIES.length} kategorii`
                 : activeModule === "generator"
                   ? "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"
-                  : "Artykuły wysłane do akceptacji: poprawki, decyzje, historia wersji"}
+                  : activeModule === "akceptacje"
+                    ? "Artykuły wysłane do akceptacji: poprawki, decyzje, historia wersji"
+                    : "Lista zaproszonych kont Google i role"}
             </p>
           </div>
           <div style={{ flex: 1 }} />
           {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
           <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
-            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"]].map(([key, label]) => (
+            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
               <button key={key} onClick={() => { setActiveModule(key); if (key === "akceptacje" && !reviewId) openReview(null); }}
                 style={{
                   border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
@@ -1846,6 +1857,7 @@ export default function App() {
               </button>
             ))}
           </div>
+          <UserBar session={session} onLogout={onLogout} />
           {activeModule === "format" && step !== "input" && (
             <button onClick={handleReset} style={btnSecondary}>
               <FileText size={14} /> Nowy artykuł
@@ -1863,6 +1875,7 @@ export default function App() {
             onSendToFormat={(html) => { setInput(html); setActiveModule("format"); handleAnalyze(html); }}
           />
         </div>
+        {activeModule === "uzytkownicy" && session?.role === "admin" && <AdminUsers />}
         {activeModule === "akceptacje" && (
           <Reviews shared={{ normalizeDashes, buildFaqCmsJson }} reviewId={reviewId} onOpen={openReview} />
         )}

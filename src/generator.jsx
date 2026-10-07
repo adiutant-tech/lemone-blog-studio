@@ -14,9 +14,10 @@
 // `onSendToFormat`. Boxy, karty H3, ItemList, TOC i FAQ robi dojrzały pipeline.
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, RotateCcw, Search } from "lucide-react";
+import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, RotateCcw, Search, Paperclip, Upload, Youtube, Image as ImageIcon, X } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { SendForReview } from "./review.jsx"; // bramka weryfikacji jest u akceptującego (v4.1)
+import { apiFetch } from "./auth.jsx";
 import { DZIEDZINY } from "./prompts/klinika.js";
 
 const apiUrl = import.meta.env.VITE_API_URL || "https://api.anthropic.com/v1/messages";
@@ -160,7 +161,7 @@ async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, eff
     const body = { model, max_tokens: maxTokens, messages, stream: true };
     if (effortLow) body.output_config = { effort: "low" };
     if (search) body.tools = [WEB_SEARCH_TOOL];
-    const res = await fetch(apiUrl, {
+    const res = await apiFetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -280,7 +281,7 @@ function buildInlineFaq(items) {
 
 // === Prompty ===
 const pmBlock = (f) => f.promptMatka ? "PROMPT MATKA (nadrzędne wytyczne redakcji):\n" + f.promptMatka + "\n\n" : "";
-const materialsLimit = (f) => f.typ === "klinika" ? 30000 : 6000;
+const materialsLimit = (f) => f.typ === "klinika" ? 30000 : 20000;
 const materialsBlock = (f, lead) => f.materials ? `\n${lead}\n` + f.materials.slice(0, materialsLimit(f)) : "";
 const researchBlock = (f) => f.research ? `\nZAPLECZE MERYTORYCZNE (zebrane z aktualnych źródeł; fakty medyczne opieraj na nim):\n${f.research.text.slice(0, 20000)}\n` : "";
 
@@ -325,7 +326,8 @@ ${materialsBlock(f, "MATERIAŁY ŹRÓDŁOWE (mają PIERWSZEŃSTWO nad Twoją wie
 ${researchBlock(f)}
 ${rankingReq}
 WYMAGANIA KONSPEKTU:
-${isRanking ? "" : countRule + "\n"}- Fraza główna w maksymalnie JEDNYM nagłówku H2
+${isRanking ? "" : countRule + "\n"}- Jeśli materiały zawierają "KONSPEKT Z ZAŁĄCZNIKA", odwzoruj jego strukturę i kolejność (konspekt redakcji ma pierwszeństwo nad liczbą sekcji)
+- Fraza główna w maksymalnie JEDNYM nagłówku H2
 - Dla każdej sekcji: tytuł H2, opcjonalnie 2-3 H3, jedno zdanie tezy (co sekcja udowadnia/daje czytelnikowi)
 - 3 propozycje H1 (różne kąty, każdy z frazą główną, bez clickbaitu${isRanking ? "; liczba produktów w tytule dozwolona" : ""})
 
@@ -510,6 +512,45 @@ STRUKTURA (HTML: <h3>, <p>, <ul><li>, opcjonalnie <table>):
 Pisz zwięźle, językiem lekarskim, łącznie maks. ok. 700 słów. ZWRÓĆ WYŁĄCZNIE HTML, bez markdown.`;
 }
 
+// === Załączniki: jedno wywołanie czyta PDF-y, obrazy i transkrypcje; wyciąg trafia do materiałów ===
+// Dzięki temu ciężkie pliki nie lecą z każdym wywołaniem sekcji (koszt x kilkanaście).
+const ATT_LIMITS = { pdf: 15 * 1024 * 1024, image: 5 * 1024 * 1024, total: 28 * 1024 * 1024 };
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+const readFileB64 = (file) => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(String(r.result).split(",")[1]);
+  r.onerror = () => reject(r.error);
+  r.readAsDataURL(file);
+});
+
+function buildAttachmentsContent(f, attachments) {
+  const blocks = [];
+  for (const a of attachments) {
+    if (a.kind === "pdf") blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: a.data }, title: a.name });
+    else if (a.kind === "image") {
+      blocks.push({ type: "text", text: `[Obraz: ${a.name}]` });
+      blocks.push({ type: "image", source: { type: "base64", media_type: a.mediaType, data: a.data } });
+    } else if (a.kind === "yt") {
+      blocks.push({ type: "text", text: `[YouTube: ${a.title}] kanał: ${a.author}, ${a.url}\n${a.transcript.trim() ? "TRANSKRYPCJA:\n" + a.transcript.slice(0, 60000) : "(brak transkrypcji: znany jest tylko tytuł; nie wymyślaj treści filmu)"}` });
+    }
+  }
+  const kind = TYPES[f.typ].label.toLowerCase();
+  blocks.push({ type: "text", text: `Przygotowujesz materiały do artykułu (${kind}) na temat:
+${f.topic}
+FRAZA GŁÓWNA: ${f.keyword || "(brak)"}
+
+Powyżej są załączniki redakcji. Wyciągnij z nich wszystko, co przyda się do napisania artykułu:
+- jeśli któryś załącznik to KONSPEKT albo brief redakcji, przepisz najpierw wiernie jego strukturę (nagłówki, punkty, kolejność) jako blok "KONSPEKT Z ZAŁĄCZNIKA"
+- fakty, dane liczbowe, definicje, mechanizmy, zalecenia, cytaty warte użycia
+- z obrazów: co przedstawiają i jakie informacje z nich wynikają (tekst, tabele, wykresy)
+- przy każdym punkcie oznacz źródło w nawiasie: [PDF: nazwa], [Obraz: nazwa], [YouTube: tytuł]
+- nic spoza załączników; nie oceniaj i nie dopowiadaj
+
+Maks. ok. 2500 słów, zwykły tekst w punktach (bez znaczników markdown). Zamiast myślnika "${EM}" używaj dywizu "-".` });
+  return blocks;
+}
+
 // Kolejka jednostek pisania: intro, sekcje, a w rankingu otwarcie listy + karta na produkt.
 function buildUnits(outline) {
   const units = [{ kind: "intro" }];
@@ -545,6 +586,11 @@ export default function Generator({ shared, onSendToFormat }) {
   const [keywordsAux, setKeywordsAux] = useState("");
   const [topic, setTopic] = useState("");
   const [materials, setMaterials] = useState("");
+  // Załączniki: [{id, kind: "pdf"|"image"|"yt", name, size, mediaType, data, url, title, author, transcript, done}]
+  const [attachments, setAttachments] = useState([]);
+  const [ytUrl, setYtUrl] = useState("");
+  const [attBusy, setAttBusy] = useState(false);
+  const [attError, setAttError] = useState(null);
   const [productsText, setProductsText] = useState("");
   const [length, setLength] = useState("standard");
   const [redline, setRedline] = useState(TYPES.edukacyjny.redlineDefault);
@@ -597,6 +643,48 @@ export default function Generator({ shared, onSendToFormat }) {
     products: parsedProducts.items, research, ...extra,
   });
   const opts = (o = {}) => ({ model, ...o });
+
+  const addFiles = async (fileList) => {
+    setAttError(null);
+    const next = [...attachments];
+    for (const file of Array.from(fileList || [])) {
+      const kind = file.type === "application/pdf" ? "pdf" : IMAGE_TYPES.includes(file.type) ? "image" : null;
+      if (!kind) { setAttError(`${file.name}: obsługiwane są PDF i obrazy JPG, PNG, GIF, WebP.`); continue; }
+      if (file.size > ATT_LIMITS[kind]) { setAttError(`${file.name}: za duży (limit ${ATT_LIMITS[kind] / 1024 / 1024} MB).`); continue; }
+      const total = next.reduce((s, a) => s + (a.size || 0), 0) + file.size;
+      if (total > ATT_LIMITS.total) { setAttError(`Łącznie maks. ${ATT_LIMITS.total / 1024 / 1024} MB załączników.`); break; }
+      next.push({ id: `${Date.now()}-${file.name}`, kind, name: file.name, size: file.size, mediaType: file.type, data: await readFileB64(file) });
+    }
+    setAttachments(next);
+  };
+
+  const addYt = async () => {
+    setAttError(null); setAttBusy(true);
+    try {
+      const res = await apiFetch(`${apiUrl.replace(/\/$/, "")}/yt`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: ytUrl.trim() }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error === "not-youtube-url" ? "To nie jest link do filmu YouTube." : (j.error || `HTTP ${res.status}`));
+      if (!attachments.some(a => a.kind === "yt" && a.url === j.url)) {
+        setAttachments([...attachments, { id: `yt-${j.id}`, kind: "yt", url: j.url, title: j.title, author: j.author, transcript: "" }]);
+      }
+      setYtUrl("");
+    } catch (e) { setAttError(e.message); }
+    setAttBusy(false);
+  };
+
+  const processAttachments = async () => {
+    setAttError(null); setAttBusy(true);
+    try {
+      const todo = attachments.filter(a => !a.done);
+      const text = shared.normalizeDashes(await callModel(buildAttachmentsContent(formData(), todo), opts({ maxTokens: 8000 })));
+      setMaterials(prev => `${prev.trim() ? prev.trim() + "\n\n" : ""}=== WYCIĄG Z ZAŁĄCZNIKÓW ===\n${text.trim()}`);
+      // Treść pliku nie jest już potrzebna: zostaje tylko wpis na liście
+      setAttachments(attachments.map(a => todo.includes(a) ? { ...a, done: true, data: undefined } : a));
+    } catch (e) { setAttError(`Nie udało się przetworzyć załączników: ${e.message}`); }
+    setAttBusy(false);
+  };
 
   const runResearch = async () => {
     setPhase("research");
@@ -923,7 +1011,50 @@ export default function Generator({ shared, onSendToFormat }) {
           <label style={ui.label}>Opis zagadnienia / materiały źródłowe (opcjonalne)</label>
           <textarea value={materials} onChange={e => setMaterials(e.target.value)} rows={5} style={{ ...ui.input, resize: "vertical" }} disabled={formLocked}
             placeholder="Notatki, badania, teksty producentów. Mają pierwszeństwo nad wiedzą modelu." />
-          {isKlinika && <p style={ui.help}>Limit {materialsLimit({ typ }).toLocaleString("pl-PL")} znaków.</p>}
+          <p style={ui.help}>Limit {materialsLimit({ typ }).toLocaleString("pl-PL")} znaków; wyciąg z załączników dopisuje się tutaj.</p>
+        </div>
+
+        <div style={{ ...S.field, ...S.box }}>
+          <label style={{ ...ui.label, display: "flex", alignItems: "center", gap: 6 }}><Paperclip size={13} /> Załączniki (PDF, obrazy, YouTube)</label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <label style={{ ...ui.btnSecondary, cursor: formLocked ? "not-allowed" : "pointer" }}>
+              <Upload size={13} /> Dodaj pliki
+              <input type="file" multiple accept="application/pdf,image/jpeg,image/png,image/gif,image/webp" style={{ display: "none" }}
+                disabled={formLocked} onChange={e => { addFiles(e.target.files); e.target.value = ""; }} />
+            </label>
+            <input value={ytUrl} onChange={e => setYtUrl(e.target.value)} style={{ ...ui.input, flex: 1, minWidth: 180 }} disabled={formLocked}
+              placeholder="Link YouTube" onKeyDown={e => { if (e.key === "Enter") addYt(); }} />
+            <button onClick={addYt} disabled={formLocked || !ytUrl.trim() || attBusy} style={{ ...ui.btnSecondary, ...(ytUrl.trim() ? {} : ui.btnDisabled) }}>
+              <Youtube size={13} /> Dodaj film
+            </button>
+          </div>
+          {attachments.map(a => (
+            <div key={a.id} style={{ borderTop: `1px solid ${theme.color.border}`, marginTop: 8, paddingTop: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: theme.size.small + 1 }}>
+                {a.kind === "pdf" ? <FileText size={13} /> : a.kind === "image" ? <ImageIcon size={13} /> : <Youtube size={13} />}
+                <span style={{ flex: 1, wordBreak: "break-word" }}>
+                  {a.kind === "yt" ? `${a.title} (${a.author})` : a.name}
+                  {a.size ? <span style={{ color: theme.color.textMuted }}> · {(a.size / 1024 / 1024).toFixed(1)} MB</span> : null}
+                  {a.done && <span style={{ color: theme.color.success }}> · przetworzony</span>}
+                </span>
+                {!formLocked && <button onClick={() => setAttachments(attachments.filter(x => x.id !== a.id))} style={{ ...S.iconBtn }} title="Usuń"><X size={12} /></button>}
+              </div>
+              {a.kind === "yt" && !a.done && (
+                <textarea value={a.transcript} onChange={e => setAttachments(attachments.map(x => x.id === a.id ? { ...x, transcript: e.target.value } : x))}
+                  rows={3} style={{ ...ui.input, resize: "vertical", marginTop: 6, fontSize: 12.5 }} disabled={formLocked}
+                  placeholder="Wklej transkrypcję: pod filmem „…więcej” → „Pokaż transkrypcję”, zaznacz i skopiuj. Bez niej model zna tylko tytuł." />
+              )}
+            </div>
+          ))}
+          {attError && <div style={{ ...ui.banner("danger"), marginTop: 8 }}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{attError}</div>}
+          {attachments.some(a => !a.done) && (
+            <button onClick={processAttachments} disabled={formLocked || attBusy || !topic.trim()}
+              style={{ ...ui.btnPrimary(P), marginTop: 10, ...(formLocked || attBusy || !topic.trim() ? ui.btnDisabled : {}) }}
+              title={topic.trim() ? "Model czyta załączniki raz i dopisuje wyciąg do materiałów" : "Najpierw wpisz rozwinięcie tematu"}>
+              {attBusy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} {attBusy ? "Czytam załączniki..." : "Przetwórz załączniki do materiałów"}
+            </button>
+          )}
+          <p style={{ ...ui.help, marginBottom: 0 }}>PDF do 15 MB, obrazy do 5 MB. Model czyta je raz; wyciąg (z oznaczeniem źródła) trafia do materiałów, gdzie możesz go poprawić.</p>
         </div>
 
           <div style={S.row2}>
