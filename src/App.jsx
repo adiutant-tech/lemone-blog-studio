@@ -7,6 +7,8 @@ import Generator from "./generator.jsx";
 import Reviews, { SendForReview } from "./review.jsx";
 // v4.2: logowanie Google (lista zaproszonych, role admin/edytor)
 import { apiFetch, useSession, AUTH_ENABLED, LoginView, UserBar, AdminUsers } from "./auth.jsx";
+// v4.4: archiwum wszystkich wygenerowanych artykułów (tylko admin)
+import ArchiveModule from "./archive.jsx";
 import theme from "./theme.js";
 
 // Link do akceptacji: #/akceptacja/<id> (GitHub Pages bez routingu po ścieżce)
@@ -1829,7 +1831,7 @@ function App({ session, onLogout }) {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.3 · Niższe koszty: cache, licznik, głębokość źródeł
+                v4.4 · Archiwum artykułów (admin)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1839,13 +1841,15 @@ function App({ session, onLogout }) {
                   ? "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"
                   : activeModule === "akceptacje"
                     ? "Artykuły wysłane do akceptacji: poprawki, decyzje, historia wersji"
-                    : "Lista zaproszonych kont Google i role"}
+                    : activeModule === "archiwum"
+                      ? "Wszystkie wygenerowane artykuły: podgląd, edycja HTML, wersje"
+                      : "Lista zaproszonych kont Google i role"}
             </p>
           </div>
           <div style={{ flex: 1 }} />
           {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
           <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
-            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
+            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["archiwum", "Archiwum"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
               <button key={key} onClick={() => { setActiveModule(key); if (key === "akceptacje" && !reviewId) openReview(null); }}
                 style={{
                   border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
@@ -1876,6 +1880,7 @@ function App({ session, onLogout }) {
           />
         </div>
         {activeModule === "uzytkownicy" && session?.role === "admin" && <AdminUsers />}
+        {activeModule === "archiwum" && session?.role === "admin" && <ArchiveModule shared={{ normalizeDashes, buildFaqCmsJson }} />}
         {activeModule === "akceptacje" && (
           <Reviews shared={{ normalizeDashes, buildFaqCmsJson }} reviewId={reviewId} onOpen={openReview} />
         )}

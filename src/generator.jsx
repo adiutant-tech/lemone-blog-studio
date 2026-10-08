@@ -702,6 +702,23 @@ export default function Generator({ shared, onSendToFormat }) {
   const track = (e) => setCosts(c => [...c, e]);
   const opts = (o = {}) => ({ model, track, ...o });
 
+  // Archiwum (v4.4): każdy gotowy artykuł zapisuje się automatycznie; przegląda je admin
+  const [archived, setArchived] = useState(null); // null | "saving" | "ok" | "error"
+  useEffect(() => {
+    if (!result) { setArchived(null); return; }
+    setArchived("saving");
+    apiFetch(`${apiUrl.replace(/\/$/, "")}/articles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: isKlinika ? "klinika" : "sklep", typ, model,
+        title: outline?.chosenH1 || topic.slice(0, 120), keyword, topic,
+        html: result.html, faqItems: result.faqItems || [], note: result.note || "", sources: result.sources || [],
+        usd: costs.reduce((sum, c) => sum + c.usd, 0),
+      }),
+    }).then(r => setArchived(r.ok ? "ok" : "error")).catch(() => setArchived("error"));
+  }, [result]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const addFiles = async (fileList) => {
     setAttError(null);
     const next = [...attachments];
@@ -1322,6 +1339,7 @@ export default function Generator({ shared, onSendToFormat }) {
                   {!result.draft && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>FAQ: {checks.faq} pytań</span>}
                   {isKlinika && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>źródła: {result.sources?.length || 0}</span>}
                   <div style={{ flexBasis: "100%" }}><CostMeter costs={costs} note={isKlinika || result.draft ? "" : "bez FAQ z Formatowania"} /></div>
+                  {archived && <div style={{ flexBasis: "100%", ...ui.help, margin: 0 }}>{{ saving: "Zapisuję w archiwum...", ok: "Zapisano w archiwum.", error: "Nie udało się zapisać w archiwum (artykuł jest nadal na ekranie)." }[archived]}</div>}
                 </div>
               )}
 
