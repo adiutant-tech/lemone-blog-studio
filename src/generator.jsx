@@ -14,7 +14,7 @@
 // `onSendToFormat`. Boxy, karty H3, ItemList, TOC i FAQ robi dojrzały pipeline.
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, RotateCcw, Search, Paperclip, Upload, Youtube, Image as ImageIcon, X } from "lucide-react";
+import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, RotateCcw, Search, Paperclip, Upload, Youtube, Image as ImageIcon, X, Link2 } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { SendForReview } from "./review.jsx"; // bramka weryfikacji jest u akceptującego (v4.1)
 import { apiFetch } from "./auth.jsx";
@@ -87,7 +87,7 @@ const GUARD_KLINIKA = `GRANICE MERYTORYCZNE (strona kliniki medycznej, czytelnik
 - Ciąża i karmienie: zawsze ostrożnie, z odesłaniem do lekarza
 - Używaj nazw substancji, nie nazw handlowych leków ani marek produktów
 - Nie wymyślaj liczb, odsetków, nazw badań ani wytycznych; przy niepewności formułuj ostrożnie
-- Bez linków i bez przypisów w treści dla pacjenta: źródła trafiają do notatki dla lekarza`;
+- Bez linków i bez przypisów w treści dla pacjenta (wyjątek: wskazane linki do naszych stron); źródła trafiają do notatki dla lekarza`;
 
 // === Etap 2: warstwy stylu per typ ===
 const STYLE_BY_TYPE = {
@@ -332,6 +332,24 @@ const materialsLimit = (f) => f.typ === "klinika" ? 30000 : 20000;
 const materialsBlock = (f, lead) => f.materials ? `\n${lead}\n` + f.materials.slice(0, materialsLimit(f)) : "";
 const researchBlock = (f) => f.research ? `\nZAPLECZE MERYTORYCZNE (zebrane z aktualnych źródeł; fakty medyczne opieraj na nim):\n${f.research.text.slice(0, 20000)}\n` : "";
 
+// === Nasze opublikowane strony (v4.4): spójność, brak powtórzeń, linki wewnętrzne ===
+// To kontekst i cel linkowania, NIE źródło faktów (self-citation to słaby sygnał E-E-A-T,
+// a błąd z naszej strony przeszedłby dalej). Worker /page pobiera tylko nasze domeny.
+const OWN_PAGES_MAX = 3;
+const OWN_HOSTS = ["lemone.pl", "sklep.lemone.pl"];
+const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+const isOwnUrl = (url) => OWN_HOSTS.includes(hostOf(url));
+// Link w obrębie tego samego serwisu jako ścieżka (jak linki produktowe w CMS), między serwisami pełny URL
+function ownHref(url, typ) {
+  const articleHost = typ === "klinika" ? "lemone.pl" : "sklep.lemone.pl";
+  if (hostOf(url) !== articleHost) return url;
+  const u = new URL(url);
+  return u.pathname + u.search;
+}
+const ownPagesBlock = (f) => f.ownPages?.length
+  ? `\nNASZE OPUBLIKOWANE STRONY (kontekst, NIE źródło faktów; nie przepisuj ich i nie parafrazuj, nie powtarzaj ich zakresu, nie przecz im; nowy tekst ma je uzupełniać):\n${f.ownPages.map((p, i) => `[${i + 1}] ${p.title} (${p.href})\n${p.text.slice(0, 6000)}`).join("\n\n")}\n`
+  : "";
+
 const OUTLINE_ROLE = {
   edukacyjny: "Przygotuj KONSPEKT artykułu edukacyjnego.",
   lifestylowy: "Przygotuj KONSPEKT artykułu lifestylowego: pielęgnacja osadzona w stylu życia, rytuałach i sytuacjach dnia codziennego. Artykuł ma inspirować i jednocześnie dawać konkretne, wykonalne wskazówki.",
@@ -358,9 +376,17 @@ WYMAGANIA SPECJALNE RANKINGU:
 - Lista produktów to osobny element w "sections": {"kind":"ranking","h2":"..."} wstawiony w odpowiednie miejsce
 - Dla KAŻDEGO produktu, w tej samej kolejności, krótka etykieta "bestFor": dla kogo / do czego najlepszy (max 8 słów, bez superlatyw), oparta na nazwie, podtytule i notatkach
 ` : "";
+  const own = f.ownPages?.length > 0;
+  const ownJson = own ? `,"overlap":"","links":[{"page":1,"section":0,"anchor":"..."}]` : "";
+  const ownReq = own ? `
+NASZE STRONY (lista powyżej):
+- Nowy artykuł ma UZUPEŁNIAĆ nasze opublikowane strony: inny kąt albo głębiej to, czego nie omawiają; nie powtarzaj ich zakresu
+- "overlap": jeśli temat w dużej mierze pokrywa się z którąś naszą stroną (ta sama intencja wyszukiwania, ryzyko kanibalizacji frazy), napisz 1-2 zdania: z którą stroną i co zrobić (np. zaktualizować tamtą stronę albo zmienić kąt). Brak pokrycia = ""
+- "links": dla KAŻDEJ naszej strony wskaż sekcję (indeks w "sections", od 0), w której link pasuje naturalnie, i anchor 2-5 słów (naturalna fraza, nie "kliknij tutaj"); jedna strona = jeden link
+` : "";
   const json = isRanking
-    ? `{"h1":["...","...","..."],"sections":[{"h2":"...","h3":["..."],"thesis":"..."},{"kind":"ranking","h2":"..."},{"h2":"...","h3":[],"thesis":"..."}],"products":[{"bestFor":"..."}]}`
-    : `{"h1":["...","...","..."],"sections":[{"h2":"...","h3":["..."],"thesis":"..."}]}`;
+    ? `{"h1":["...","...","..."],"sections":[{"h2":"...","h3":["..."],"thesis":"..."},{"kind":"ranking","h2":"..."},{"h2":"...","h3":[],"thesis":"..."}],"products":[{"bestFor":"..."}]${ownJson}}`
+    : `{"h1":["...","...","..."],"sections":[{"h2":"...","h3":["..."],"thesis":"..."}]${ownJson}}`;
   const who = f.typ === "klinika"
     ? "Jesteś redaktorem medycznym strony kliniki MEDLINES, piszącym dla pacjentów pod nadzorem lekarzy."
     : "Jesteś redaktorem prowadzącym polskiego bloga kosmetyczno-zdrowotnego Lemoné (sklep.lemone.pl).";
@@ -370,8 +396,8 @@ TEMAT I KĄT: ${f.topic}
 FRAZA GŁÓWNA (SEO): ${f.keyword}
 ${f.keywordsAux ? "FRAZY POMOCNICZE: " + f.keywordsAux : ""}
 ${materialsBlock(f, "MATERIAŁY ŹRÓDŁOWE (mają PIERWSZEŃSTWO nad Twoją wiedzą; nie wychodź poza nie w faktach spornych):")}
-${researchBlock(f)}
-${rankingReq}
+${researchBlock(f)}${ownPagesBlock(f)}
+${rankingReq}${ownReq}
 WYMAGANIA KONSPEKTU:
 ${isRanking ? "" : countRule + "\n"}- Jeśli materiały zawierają "KONSPEKT Z ZAŁĄCZNIKA", odwzoruj jego strukturę i kolejność (konspekt redakcji ma pierwszeństwo nad liczbą sekcji)
 - Fraza główna w maksymalnie JEDNYM nagłówku H2
@@ -396,7 +422,7 @@ function articleContext(f, outline) {
   return `${pmBlock(f)}Piszesz ${kind}.
 TYTUŁ (H1, nie powtarzaj go w treści): ${outline.chosenH1}
 FRAZA GŁÓWNA: ${f.keyword}${f.keywordsAux ? "\nFRAZY POMOCNICZE (wplataj naturalnie, bez upychania): " + f.keywordsAux : ""}${productsLine}
-${f.typ === "klinika" ? "TEMAT PODSTRONY: " + f.topic + "\n" : ""}${materialsBlock(f, "MATERIAŁY ŹRÓDŁOWE (pierwszeństwo nad Twoją wiedzą):")}${researchBlock(f)}`;
+${f.typ === "klinika" ? "TEMAT PODSTRONY: " + f.topic + "\n" : ""}${materialsBlock(f, "MATERIAŁY ŹRÓDŁOWE (pierwszeństwo nad Twoją wiedzą):")}${researchBlock(f)}${ownPagesBlock(f)}`;
 }
 
 function buildSectionPrompt(f, outline, unit, prevExcerpt) {
@@ -409,13 +435,18 @@ H2: ${sec.h2}
 ${sec.h3 && sec.h3.length ? "H3 do użycia (wszystkie): " + sec.h3.join(" | ") : "Bez H3."}
 TEZA SEKCJI: ${sec.thesis}${f.typ === "klinika" ? "\nRealizuj wyłącznie tezę tej sekcji; nie uprzedzaj kolejnych sekcji." : ""}`;
   const tags = isIntro ? "<p>" : `<h2>, opcjonalnie <h3>,${f.typ === "klinika" ? " <table> (tylko gdy tabela realnie porządkuje treść)," : ""}`;
-  return { cached: sharedPrefix(f, outline), text: `${prevExcerpt ? "KONIEC POPRZEDNIEJ SEKCJI (dla ciągłości; NIE powtarzaj tych treści):\n..." + prevExcerpt + "\n\n" : ""}${header}
+  // Linki wewnętrzne przypisane w konspekcie do tej sekcji (każdy dokładnie raz w artykule)
+  const links = isIntro ? [] : (outline.links || []).filter(l => l.section === unit.idx && f.ownPages?.[l.page]);
+  const linkBlock = links.length
+    ? `\n\nLINKI WEWNĘTRZNE W TEJ SEKCJI (wstaw każdy dokładnie raz, w zdaniu, w którym naturalnie pasuje; anchor możesz lekko odmienić):\n${links.map(l => `<a href="${f.ownPages[l.page].href}">${l.anchor}</a>`).join("\n")}`
+    : "";
+  return { cached: sharedPrefix(f, outline), text: `${prevExcerpt ? "KONIEC POPRZEDNIEJ SEKCJI (dla ciągłości; NIE powtarzaj tych treści):\n..." + prevExcerpt + "\n\n" : ""}${header}${linkBlock}
 
 WYMAGANIA:
-- Czysty HTML: ${tags} <p>, <strong>, <ul><li> (lista tylko jeśli konieczna)
+- Czysty HTML: ${tags} <p>, <strong>, <ul><li>${links.length ? ", <a href> (tylko linki wskazane wyżej)" : ""} (lista tylko jeśli konieczna)
 - ${isIntro ? "80-130" : TYPES[f.typ].sectionWords} słów
 - Fraza główna w tej sekcji maksymalnie ${isIntro ? "1 raz" : "1 raz, a jeśli jest w H2, to w treści wcale"}
-- Bez odnośników, bez obrazków, bez FAQ, bez podsumowywania całości
+- ${links.length ? "Poza wskazanymi linkami bez odnośników" : "Bez odnośników"}, bez obrazków, bez FAQ, bez podsumowywania całości
 
 ZWRÓĆ WYŁĄCZNIE HTML sekcji, bez komentarzy i bez markdown.` };
 }
@@ -471,7 +502,8 @@ function buildRedlinePrompt(html, f) {
 - Skróć zdania przegadane, skonkretyzuj ogólniki (jeśli brak konkretu w tekście, przeformułuj na ostrożne, ale treściwe)
 - NIE zmieniaj: nagłówków H2/H3, kolejności akapitów, faktów, frazy głównej "${f.keyword}" (jej liczba wystąpień ma nie wzrosnąć)
 - NIE dodawaj nowych akapitów, sekcji ani list
-- Zachowaj HTML; każde "${EM}" i "${EN}" zamień na "-"; zakresy liczbowe bez spacji (2-3)${typeRule}
+- Zachowaj HTML; każde "${EM}" i "${EN}" zamień na "-"; zakresy liczbowe bez spacji (2-3)
+- Zachowaj wszystkie znaczniki <a href> bez zmian (adres i anchor)${typeRule}
 
 ${ANTI_SLOP}
 
@@ -483,7 +515,7 @@ ZWRÓĆ WYŁĄCZNIE poprawiony HTML fragmentu, bez komentarzy.`;
 
 // === Etap 3: prompty specyficzne dla kliniki ===
 function buildResearchPrompt(f) {
-  return `${pmBlock(f)}Zbierasz ZAPLECZE MERYTORYCZNE do podstrony kliniki. Użyj wyszukiwarki, aby zweryfikować kluczowe fakty w aktualnych, wiarygodnych źródłach: wytyczne i stanowiska towarzystw naukowych, PubMed/MEDLINE, przeglądy systematyczne, metaanalizy, RCT, DermNet, AAD, EADV, BAD. NIE korzystaj z materiałów marketingowych producentów ani stron komercyjnych klinik.
+  return `${pmBlock(f)}Zbierasz ZAPLECZE MERYTORYCZNE do podstrony kliniki. Użyj wyszukiwarki, aby zweryfikować kluczowe fakty w aktualnych, wiarygodnych źródłach: wytyczne i stanowiska towarzystw naukowych, PubMed/MEDLINE, przeglądy systematyczne, metaanalizy, RCT, DermNet, AAD, EADV, BAD. NIE korzystaj z materiałów marketingowych producentów ani stron komercyjnych klinik (także naszych: lemone.pl, sklep.lemone.pl).
 
 TEMAT PODSTRONY:
 ${f.topic}
@@ -589,14 +621,14 @@ Maks. ok. 2500 słów, zwykły tekst w punktach (bez znaczników markdown). Zami
 // Kolejka jednostek pisania: intro, sekcje, a w rankingu otwarcie listy + karta na produkt.
 function buildUnits(outline) {
   const units = [{ kind: "intro" }];
-  for (const sec of outline.sections) {
+  outline.sections.forEach((sec, idx) => {
     if (sec.kind === "ranking") {
       units.push({ kind: "rankingIntro", h2: sec.h2 });
       outline.products.forEach((product, i) => units.push({ kind: "product", product, rank: i + 1 }));
     } else {
-      units.push({ kind: "section", sec });
+      units.push({ kind: "section", sec, idx }); // idx = pozycja w konspekcie (przypisanie linków)
     }
-  }
+  });
   return units;
 }
 
@@ -640,6 +672,11 @@ export default function Generator({ shared, onSendToFormat }) {
   const [keywordsAux, setKeywordsAux] = useState("");
   const [topic, setTopic] = useState("");
   const [materials, setMaterials] = useState("");
+  // Nasze opublikowane strony powiązane z tematem (v4.4): linki, jeden w linii, maks. 3
+  const [ownPagesText, setOwnPagesText] = useState("");
+  const [ownPages, setOwnPages] = useState([]); // [{src, url, title, text, href}]
+  const ownPagesUrls = [...new Set(ownPagesText.split(/\r?\n/).map(x => x.trim()).filter(Boolean))].slice(0, OWN_PAGES_MAX);
+  const ownPagesBad = ownPagesUrls.filter(u => !isOwnUrl(u));
   // Załączniki: [{id, kind: "pdf"|"image"|"yt", name, size, mediaType, data, url, title, author, transcript, done}]
   const [attachments, setAttachments] = useState([]);
   const [ytUrl, setYtUrl] = useState("");
@@ -692,15 +729,32 @@ export default function Generator({ shared, onSendToFormat }) {
   const finishCache = useRef(null); // wyniki etapu końcowego do ponowienia bez powtórek
 
   const productsOk = !isRanking || (parsedProducts.items.length >= MIN_RANKING_PRODUCTS && parsedProducts.errors.length === 0);
-  const canStart = topic.trim() && keyword.trim() && productsOk;
+  const canStart = topic.trim() && keyword.trim() && productsOk && ownPagesBad.length === 0;
   const formData = (extra = {}) => ({
     typ, promptMatka, keyword, keywordsAux, topic, materials, length,
-    products: parsedProducts.items, research, ...extra,
+    products: parsedProducts.items, research, ownPages, ...extra,
   });
   // Licznik kosztu przebiegu (szacunek z usage API, per etap)
   const [costs, setCosts] = useState([]);
   const track = (e) => setCosts(c => [...c, e]);
   const opts = (o = {}) => ({ model, track, ...o });
+
+  // Archiwum (v4.4): każdy gotowy artykuł zapisuje się automatycznie; przegląda je admin
+  const [archived, setArchived] = useState(null); // null | "saving" | "ok" | "error"
+  useEffect(() => {
+    if (!result) { setArchived(null); return; }
+    setArchived("saving");
+    apiFetch(`${apiUrl.replace(/\/$/, "")}/articles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: isKlinika ? "klinika" : "sklep", typ, model,
+        title: outline?.chosenH1 || topic.slice(0, 120), keyword, topic,
+        html: result.html, faqItems: result.faqItems || [], note: result.note || "", sources: result.sources || [],
+        usd: costs.reduce((sum, c) => sum + c.usd, 0),
+      }),
+    }).then(r => setArchived(r.ok ? "ok" : "error")).catch(() => setArchived("error"));
+  }, [result]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addFiles = async (fileList) => {
     setAttError(null);
@@ -748,6 +802,7 @@ export default function Generator({ shared, onSendToFormat }) {
     setPhase("research");
     try {
       const r = await callModel(buildResearchPrompt(formData()), opts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[searchDepth].uses, stage: "źródła" }));
+      r.sources = r.sources.filter(s => !isOwnUrl(s.url)); // nasze strony nie są źródłem faktów
       setResearch(r);
       return r;
     } catch (e) {
@@ -757,13 +812,36 @@ export default function Generator({ shared, onSendToFormat }) {
     }
   };
 
+  // Pobranie naszych stron przez Worker /page (raz na zestaw linków)
+  const loadOwnPages = async () => {
+    const urls = ownPagesUrls;
+    if (!urls.length) { setOwnPages([]); return []; }
+    if (ownPages.length === urls.length && ownPages.every((p, i) => p.src === urls[i])) return ownPages;
+    const pages = [];
+    for (const src of urls) {
+      const res = await apiFetch(`${apiUrl.replace(/\/$/, "")}/page`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: src }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const why = { "not-own-domain": "to nie nasza domena (lemone.pl, sklep.lemone.pl)", "no-content": "nie znaleziono treści artykułu" }[j.error] || j.error || res.status;
+        throw new Error(`Nie pobrano strony ${src}: ${why}`);
+      }
+      pages.push({ src, url: j.url, title: j.title, text: j.text, href: ownHref(j.url, typ) });
+    }
+    setOwnPages(pages);
+    return pages;
+  };
+
   const genOutline = async () => {
     setError(null); setWarning(null);
     try {
+      setPhase("outlineLoading");
+      const own = await loadOwnPages();
       let r = research;
       if (isKlinika && webSearch && !research) r = await runResearch();
       setPhase("outlineLoading");
-      const f = formData({ research: r });
+      const f = formData({ research: r, ownPages: own });
       const txt = await callModel(buildOutlinePrompt(f), opts({ maxTokens: 6000, effortLow: true, stage: "konspekt" }));
       const j = parseJsonLoose(txt);
       if (!j.h1?.length || !j.sections?.length) throw new Error("Konspekt niekompletny");
@@ -779,7 +857,15 @@ export default function Generator({ shared, onSendToFormat }) {
       } else {
         sections = sections.filter(s => s.kind !== "ranking");
       }
-      setOutline({ h1: j.h1, chosenH1: j.h1[0], sections, products });
+      // Linki do naszych stron: model podaje indeks w swojej liście sekcji; po korektach
+      // (wstawienie/usunięcie listy rankingu) przeliczamy go po obiekcie sekcji.
+      const links = (Array.isArray(j.links) ? j.links : []).map(l => {
+        const page = Number(l.page) - 1;
+        const section = sections.indexOf(j.sections[Number(l.section)]);
+        return { page, section, anchor: String(l.anchor || "").trim() };
+      }).filter((l, i, arr) => own[l.page] && l.section >= 0 && sections[l.section]?.kind !== "ranking" && l.anchor
+        && arr.findIndex(x => x.page === l.page) === i);
+      setOutline({ h1: j.h1, chosenH1: j.h1[0], sections, products, links, overlap: String(j.overlap || "").trim() });
       setPhase("outline");
     } catch (e) { setError(e.message || String(e)); setPhase("form"); }
   };
@@ -936,6 +1022,7 @@ export default function Generator({ shared, onSendToFormat }) {
       h2kw,
       h2kwOk: h2kw <= 2,
       emDash: (result.html.match(DASH_RE) || []).length,
+      ownLinks: ownPages.filter(p => result.html.includes(`href="${p.href}"`)).length,
       sections: (result.html.match(/<h2/gi) || []).length,
       faq: result.faqItems.length,
       products: result.draft ? (result.html.match(/<div class="product">/g) || []).length : null,
@@ -1071,6 +1158,16 @@ export default function Generator({ shared, onSendToFormat }) {
           <textarea value={materials} onChange={e => setMaterials(e.target.value)} rows={5} style={{ ...ui.input, resize: "vertical" }} disabled={formLocked}
             placeholder="Notatki, badania, teksty producentów. Mają pierwszeństwo nad wiedzą modelu." />
           <p style={ui.help}>Limit {materialsLimit({ typ }).toLocaleString("pl-PL")} znaków; wyciąg z załączników dopisuje się tutaj.</p>
+        </div>
+
+        <div style={S.field}>
+          <label style={ui.label}>Nasze powiązane strony (opcjonalnie, maks. {OWN_PAGES_MAX})</label>
+          <textarea value={ownPagesText} onChange={e => setOwnPagesText(e.target.value)} rows={2} style={{ ...ui.input, resize: "vertical", fontFamily: theme.font.mono, fontSize: 12 }} disabled={formLocked}
+            placeholder={"Link do naszego artykułu o pokrewnym temacie, jeden w linii\nhttps://sklep.lemone.pl/blog/wpis/... albo https://www.lemone.pl/blog/..."} />
+          <p style={ui.help}>
+            Tylko lemone.pl i sklep.lemone.pl. Nowy tekst uzupełni te strony zamiast je powtarzać, podlinkuje je i ostrzeże, gdy temat się pokrywa. Nie są źródłem faktów.
+            {ownPagesBad.length > 0 && <span style={{ color: theme.color.danger }}> Spoza naszych domen: {ownPagesBad.join(", ")}.</span>}
+          </p>
         </div>
 
         <div style={{ ...S.field, ...S.box }}>
@@ -1211,6 +1308,12 @@ export default function Generator({ shared, onSendToFormat }) {
                 <input value={outline.chosenH1} onChange={e => setOutline({ ...outline, chosenH1: e.target.value })} style={{ ...ui.input, marginTop: 6 }} />
                 <p style={ui.help}>Wybierz propozycję albo edytuj ręcznie.</p>
               </div>
+              {outline.overlap && (
+                <div style={{ ...ui.banner("warning"), marginBottom: theme.space(2) }}>
+                  <AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />
+                  <strong>Możliwa kanibalizacja:</strong> {outline.overlap}
+                </div>
+              )}
               {outline.sections.map((s, i) => s.kind === "ranking" ? (
                 <div key={i} style={{ ...S.box, background: P.soft }}>
                   <label style={ui.label}>Lista produktów (H2)</label>
@@ -1239,8 +1342,19 @@ export default function Generator({ shared, onSendToFormat }) {
                   {s.h3 && s.h3.length > 0 && (
                     <p style={ui.help}>H3: {s.h3.join(" · ")}</p>
                   )}
+                  {(outline.links || []).filter(l => l.section === i).map(l => (
+                    <p key={l.page} style={{ ...ui.help, color: theme.color.text }}>
+                      <Link2 size={12} style={{ verticalAlign: "-2px" }} /> Link: „{l.anchor}” → {ownPages[l.page]?.title}
+                    </p>
+                  ))}
                 </div>
               ))}
+              {ownPages.length > 0 && (
+                <p style={ui.help}>
+                  Linki do naszych stron: {(outline.links || []).length} z {ownPages.length}
+                  {(outline.links || []).length < ownPages.length ? " (dla części stron model nie znalazł naturalnego miejsca)" : ""}.
+                </p>
+              )}
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={startWriting} style={ui.btnPrimary(P)}>
                   <ChevronRight size={15} /> Akceptuję, pisz artykuł
@@ -1319,9 +1433,11 @@ export default function Generator({ shared, onSendToFormat }) {
                   <span style={ui.pill(checks.kwOk ? theme.color.accentSoft : theme.color.warningSoft, theme.color.text)}>fraza w treści: {checks.kwTotal}x {checks.kwOk ? "" : "(limit 3)"}</span>
                   <span style={ui.pill(checks.h2kwOk ? theme.color.accentSoft : theme.color.warningSoft, theme.color.text)}>fraza w H2: {checks.h2kw}x</span>
                   <span style={ui.pill(checks.emDash === 0 ? theme.color.accentSoft : theme.color.dangerSoft, checks.emDash === 0 ? theme.color.text : theme.color.danger)}>em-dash: {checks.emDash}</span>
+                  {ownPages.length > 0 && <span style={ui.pill(checks.ownLinks === ownPages.length ? theme.color.accentSoft : theme.color.warningSoft, theme.color.text)}>linki do naszych stron: {checks.ownLinks}/{ownPages.length}</span>}
                   {!result.draft && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>FAQ: {checks.faq} pytań</span>}
                   {isKlinika && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>źródła: {result.sources?.length || 0}</span>}
                   <div style={{ flexBasis: "100%" }}><CostMeter costs={costs} note={isKlinika || result.draft ? "" : "bez FAQ z Formatowania"} /></div>
+                  {archived && <div style={{ flexBasis: "100%", ...ui.help, margin: 0 }}>{{ saving: "Zapisuję w rejestrze...", ok: "Zapisano w rejestrze artykułów.", error: "Nie udało się zapisać w rejestrze (artykuł jest nadal na ekranie)." }[archived]}</div>}
                 </div>
               )}
 

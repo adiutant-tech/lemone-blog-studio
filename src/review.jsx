@@ -99,7 +99,7 @@ async function copyToClipboard(text) {
   }
 }
 
-function CopyButton({ text, label, primary = false, profile, disabled = false, title = "" }) {
+export function CopyButton({ text, label, primary = false, profile, disabled = false, title = "" }) {
   const [done, setDone] = useState(false);
   const base = primary ? ui.btnPrimary(profile) : ui.btnSecondary;
   return (
