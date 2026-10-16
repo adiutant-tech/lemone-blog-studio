@@ -18,6 +18,11 @@ const reviewIdFromHash = () => {
 };
 
 // === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) - REVERTED z 1149 do oryginału ===
+// 2026-10-16 (SLP-337, kontrola blog_studio_kategorie_kontrola_v1.csv + stan na żywo): 130 wpisów.
+// Usunięte: 10 do 410, ampulki-pod-oczy (301 na pielegnacja-okolic-oczu, już na liście), 10 pustych z noindex,
+// q10/karotenoidy/dermo-makijaz (przekierowania na ogólne listy). Podmienione na cele 301: maska-do-skory-glowy,
+// produkty-kwas-hialuronowy-ha, fotostarzenie. Kontrola na żywo dodatkowo: atopowe-zapalenie-skory -> profilaktyka-azs,
+// usunięte serum-z-witamina-c (301 na kosmetyki-z-witamina-c, już na liście) i odkazanie-i-dezynfekcja (301 na stronę główną).
 // Robert: nowe powiązania (gdy lista miała 1149) były gorsze jakościowo. Wracamy do 156 oryginalnych
 // kategorii z arkuszy "Ranking L2/L3" pliku Mapowanie_kategorii_Lemone.xlsx - te slugi są zwalidowane
 // na produkcji i wcześniejsze powiązania działały dobrze. Każdy wpis dostaje pole `c` (kontener)
@@ -34,7 +39,6 @@ const CATEGORIES = [
   {n:"Utrata blasku skóry",s:"/utrata-blasku-skory",c:"wskazanie"},
   {n:"Suchość",s:"/suchosc",c:"wskazanie"},
   {n:"Makijaż twarzy",s:"/makijaz-twarzy",c:"makijaz"},
-  {n:"Bielactwo (brak dalszego podziału)",s:"/bielactwo-brak-dalszego-podzialu",c:"wskazanie"},
   {n:"Pielęgnacja ciała",s:"/pielegnacja-ciala",c:"pielegnacja"},
   {n:"Pielęgnacja paznokci",s:"/pielegnacja-paznokci",c:"pielegnacja"},
   {n:"Bioaktywne formuły",s:"/bioaktywne-formuly",c:"suplementy"},
@@ -57,23 +61,17 @@ const CATEGORIES = [
   {n:"Przebarwienia",s:"/przebarwienia",c:"wskazanie"},
   {n:"Kosmetyki do opalania",s:"/kosmetyki-do-opalania",c:"kategorie"},
   {n:"Dzieci",s:"/dzieci",c:"dla_kogo"},
-  {n:"Naturalne kosmetyki dla dzieci",s:"/naturalne-kosmetyki-dla-dzieci",c:"kosmetyki_naturalne"},
   {n:"Pielęgnacja jamy ustnej",s:"/pielegnacja-jamy-ustnej",c:"pielegnacja"},
   {n:"Naturalne kosmetyki do włosów",s:"/naturalne-kosmetyki-do-wlosow",c:"kosmetyki_naturalne"},
   {n:"Złuszczanie",s:"/zluszczanie",c:"wskazanie"},
-  {n:"Atopowe zapalenie skóry",s:"/atopowe-zapalenie-skory",c:"wskazanie"},
+  {n:"Atopowe zapalenie skóry",s:"/profilaktyka-azs",c:"wskazanie"},
   {n:"Kosmetyki do masażu",s:"/kosmetyki-do-masazu",c:"pielegnacja"},
   {n:"Pielęgnacja - demakijaż",s:"/pielegnacja-demakijaz",c:"makijaz"},
   {n:"Pielęgnacja biustu",s:"/pielegnacja-biustu",c:"pielegnacja"},
   {n:"Pielęgnacja brwi",s:"/pielegnacja-brwi",c:"pielegnacja"},
-  {n:"Pielęgnacja całoroczna",s:"/pielegnacja-caloroczna",c:"pielegnacja"},
   {n:"Pielęgnacja dłoni",s:"/pielegnacja-dloni",c:"pielegnacja"},
-  {n:"Pielęgnacja na jesień",s:"/pielegnacja-na-jesien",c:"pielegnacja"},
-  {n:"Pielęgnacja na lato",s:"/pielegnacja-na-lato",c:"pielegnacja"},
-  {n:"Pielęgnacja na wiosnę",s:"/pielegnacja-na-wiosne",c:"pielegnacja"},
   {n:"Pielęgnacja na zimę",s:"/pielegnacja-na-zime",c:"pielegnacja"},
   {n:"Pielęgnacja nóg",s:"/pielegnacja-nog",c:"pielegnacja"},
-  {n:"Pielęgnacja okolic intymnych",s:"/pielegnacja-okolic-intymnych",c:"pielegnacja"},
   {n:"Pielęgnacja onkologiczna",s:"/pielegnacja-onkologiczna",c:"pielegnacja"},
   {n:"Pielęgnacja pozabiegowa",s:"/pielegnacja-pozabiegowa",c:"pielegnacja"},
   {n:"Pielęgnacja rzęs",s:"/pielegnacja-rzes",c:"pielegnacja"},
@@ -87,18 +85,13 @@ const CATEGORIES = [
   {n:"Nastolatkowie",s:"/nastolatkowie",c:"dla_kogo"},
   {n:"Akcesoria do włosów",s:"/akcesoria-do-wlosow",c:"kategorie"},
   {n:"Akcesoria i dodatki",s:"/akcesoria-i-dodatki",c:"kategorie"},
-  {n:"Domowe SPA",s:"/domowe-spa",c:"kategorie"},
   {n:"Domowe urządzenia pielęgnacyjne",s:"/domowe-urzadzenia-pielegnacyjne",c:"kategorie"},
   {n:"Kosmetyki do kąpieli",s:"/kosmetyki-do-kapieli",c:"kategorie"},
   {n:"Naturalne kosmetyki dla mężczyzn",s:"/naturalne-kosmetyki-dla-mezczyzn",c:"kosmetyki_naturalne"},
   {n:"Naturalne kosmetyki do ciała",s:"/naturalne-kosmetyki-do-ciala",c:"kosmetyki_naturalne"},
-  {n:"Naturalne kosmetyki do makijażu",s:"/naturalne-kosmetyki-do-makijazu",c:"makijaz"},
   {n:"Naturalne kosmetyki do rąk",s:"/naturalne-kosmetyki-do-rak",c:"kosmetyki_naturalne"},
-  {n:"Naturalne kosmetyki do rzęs",s:"/naturalne-kosmetyki-do-rzes",c:"kosmetyki_naturalne"},
-  {n:"Naturalne kosmetyki do stóp",s:"/naturalne-kosmetyki-do-stop",c:"kosmetyki_naturalne"},
   {n:"Naturalne kosmetyki do twarzy",s:"/naturalne-kosmetyki-do-twarzy",c:"kosmetyki_naturalne"},
   {n:"Naturalne kosmetyki do ust",s:"/naturalne-kosmetyki-do-ust",c:"kosmetyki_naturalne"},
-  {n:"Naturalne kosmetyki pod oczy",s:"/naturalne-kosmetyki-pod-oczy",c:"kosmetyki_naturalne"},
   {n:"Kosmetyki po opalaniu",s:"/kosmetyki-po-opalaniu",c:"kategorie"},
   {n:"Kosmetyki pod prysznic",s:"/kosmetyki-pod-prysznic",c:"kategorie"},
   {n:"Kosmetyki wegańskie",s:"/kosmetyki-weganskie",c:"kosmetyki_naturalne"},
@@ -108,9 +101,7 @@ const CATEGORIES = [
   {n:"Ochrona przed światłem niebieskim",s:"/ochrona-przed-swiatlem-niebieskim",c:"kategorie"},
   {n:"Przyśpieszacze opalania",s:"/przyspieszacze-opalania",c:"kategorie"},
   {n:"Stylizacja włosów",s:"/stylizacja-wlosow",c:"kategorie"},
-  {n:"Zapachy",s:"/zapachy",c:"kategorie"},
   {n:"Zestawy",s:"/zestawy",c:"kategorie"},
-  {n:"Żywność Funkcjonalna",s:"/zywnosc-funkcjonalna",c:"suplementy"},
   {n:"Akcesoria do makijażu",s:"/akcesoria-do-makijazu",c:"makijaz"},
   {n:"Konturowanie",s:"/konturowanie",c:"makijaz"},
   {n:"Kosmetyki mineralne",s:"/kosmetyki-mineralne",c:"makijaz"},
@@ -121,20 +112,15 @@ const CATEGORIES = [
   {n:"Zestawy do makijażu",s:"/zestawy-do-makijazu",c:"makijaz"},
   {n:"Anti-pollution",s:"/anti-pollution",c:"wskazanie"},
   {n:"Cellulit",s:"/cellulit",c:"wskazanie"},
-  {n:"Dermo-makijaż (brak dalszego podziału)",s:"/dermo-makijaz-brak-dalszego-podzialu",c:"makijaz"},
-  {n:"Fotostarzenie (brak dalszego podziału)",s:"/fotostarzenie-brak-dalszego-podzialu",c:"wskazanie"},
-  {n:"Higiena intymna",s:"/higiena-intymna",c:"wskazanie"},
-  {n:"Kosmetyki na wrastające włoski",s:"/kosmetyki-na-wrastajace-wloski",c:"wskazanie"},
+  {n:"Fotostarzenie",s:"/fotostarzenie",c:"wskazanie"},
   {n:"Łojotok",s:"/lojotok",c:"wskazanie"},
   {n:"Łupież",s:"/lupiez",c:"wskazanie"},
   {n:"Łuszczyca",s:"/luszczyca",c:"wskazanie"},
   {n:"Naczynka",s:"/naczynka",c:"wskazanie"},
   {n:"Nadmierna potliwość",s:"/nadmierna-potliwosc",c:"wskazanie"},
-  {n:"Odkażanie i dezynfekcja",s:"/odkazanie-i-dezynfekcja",c:"wskazanie"},
   {n:"Odwodnienie",s:"/odwodnienie",c:"wskazanie"},
   {n:"Oparzenie słoneczne",s:"/oparzenie-sloneczne",c:"wskazanie"},
   {n:"Osłabienie brwi lub rzęs",s:"/oslabienie-brwi-lub-rzes",c:"wskazanie"},
-  {n:"Relaksacja",s:"/relaksacja",c:"wskazanie"},
   {n:"Rogowacenie okołomieszkowe",s:"/rogowacenie-okolomieszkowe",c:"wskazanie"},
   {n:"Rozstępy",s:"/rozstepy",c:"wskazanie"},
   {n:"Rozszerzone pory",s:"/rozszerzone-pory",c:"wskazanie"},
@@ -150,32 +136,25 @@ const CATEGORIES = [
   {n:"Kremy do twarzy",s:"/kremy-do-twarzy",c:"pielegnacja"},
   {n:"Kremy pod oczy przeciwzmarszczkowe",s:"/kremy-pod-oczy-przeciwzmarszczkowe",c:"pielegnacja"},
   {n:"Kremy nawilżające",s:"/kremy-nawilzajace",c:"pielegnacja"},
-  {n:"Maski do skóry głowy",s:"/maski-do-skory-glowy",c:"kategorie"},
+  {n:"Maski do skóry głowy",s:"/maska-do-skory-glowy",c:"kategorie"},
   {n:"Suplementy na stany zapalne",s:"/suplementy-na-stany-zapalne",c:"suplementy"},
   {n:"Kremy z retinolem do twarzy",s:"/kremy-z-retinolem-do-twarzy",c:"pielegnacja"},
   {n:"Kosmetyki do tonizacji twarzy",s:"/kosmetyki-do-tonizacji-twarzy",c:"pielegnacja"},
   {n:"Kremy BB i CC rozświetlające",s:"/kremy-bb-i-cc-rozswietlajace",c:"pielegnacja"},
   {n:"Kremy pod oczy na cienie",s:"/kremy-pod-oczy-na-cienie",c:"pielegnacja"},
   {n:"Krem z retinolem na noc",s:"/krem-z-retinolem-na-noc",c:"pielegnacja"},
-  {n:"Ampułki pod oczy",s:"/ampulki-pod-oczy",c:"pielegnacja"},
   {n:"Suplementy na porost włosów",s:"/suplementy-na-porost-wlosow",c:"suplementy"},
   {n:"Kremy do twarzy z witaminą C",s:"/kremy-do-twarzy-z-witamina-c",c:"pielegnacja"},
   {n:"Suplementy na oczyszczanie organizmu",s:"/suplementy-na-oczyszczanie-organizmu",c:"suplementy"},
   {n:"Kremy na dzień dla mężczyzn",s:"/kremy-na-dzien-dla-mezczyzn",c:"pielegnacja"},
-  {n:"Suplementy z kwasem hialuronowym (HA)",s:"/suplementy-z-kwasem-hialuronowym-ha",c:"suplementy"},
+  {n:"Kwas hialuronowy (HA)",s:"/produkty-kwas-hialuronowy-ha",c:"suplementy"},
   {n:"Kremy koloryzujące do twarzy BB i CC",s:"/kremy-koloryzujace-do-twarzy-bb-i-cc",c:"pielegnacja"},
-  {n:"Naturalne szampony dla dzieci",s:"/naturalne-szampony-dla-dzieci",c:"kosmetyki_naturalne"},
   {n:"Kremy ujędrniające do twarzy",s:"/kremy-ujedrniajace-do-twarzy",c:"pielegnacja"},
-  {n:"Suplementy z koenzymem Q10",s:"/suplementy-z-koenzymem-q10",c:"suplementy"},
   {n:"Szampony do włosów",s:"/szampony-do-wlosow",c:"pielegnacja"},
   {n:"Akcesoria na cienie pod oczami",s:"/akcesoria-na-cienie-pod-oczami",c:"kategorie"},
-  {n:"Serum z witaminą C",s:"/serum-z-witamina-c",c:"kosmetyki_naturalne"},
   {n:"Kremy pod oczy na noc",s:"/kremy-pod-oczy-na-noc",c:"pielegnacja"},
   {n:"Kremy oczyszczające do twarzy",s:"/kremy-oczyszczajace-do-twarzy",c:"pielegnacja"},
-  {n:"Pasta do zębów",s:"/pasta-do-zebow",c:"pielegnacja"},
-  {n:"Naturalne szampony do włosów",s:"/naturalne-szampony-do-wlosow",c:"kosmetyki_naturalne"},
   {n:"Kremy pod oczy z witaminą C",s:"/kremy-pod-oczy-z-witamina-c",c:"pielegnacja"},
-  {n:"Suplementy z karotenoidami",s:"/suplementy-z-karotenoidami",c:"suplementy"},
   {n:"Maści na atopowe zapalenie skóry",s:"/masci-na-atopowe-zapalenie-skory",c:"wskazanie"},
   {n:"Szampony nawilżające",s:"/szampony-nawilzajace",c:"pielegnacja"},
   {n:"Szczotka do masażu",s:"/szczotka-do-masazu",c:"kategorie"}
@@ -1755,16 +1734,17 @@ function App({ session, onLogout }) {
           const live = liveStatuses[r.slug];
           return live && !live.ok && !live.error;
         });
-        if (dead.length === 0) continue;
+        // v4.5: trwałe przekierowanie (301/308) -> link od razu na stronę docelową
+        const moved = box.related.filter(r => liveStatuses[r.slug]?.redirect);
+        if (dead.length === 0 && moved.length === 0) continue;
 
-        const alive = box.related.filter(r => !dead.includes(r));
-        const deadList = dead.map(r => r.slug).join(", ");
+        const alive = box.related.filter(r => !dead.includes(r))
+          .map(r => liveStatuses[r.slug]?.redirect ? { ...r, slug: liveStatuses[r.slug].redirect } : r);
+        const warnings = [...(box.warnings || [])];
+        if (dead.length) warnings.push(`Usunięto ${dead.length} martwy(ch) slug(ów) (404 na sklepie): ${dead.map(r => r.slug).join(", ")}`);
+        if (moved.length) warnings.push(`Podmieniono przekierowane slugi na docelowe: ${moved.map(r => `${r.slug} -> ${liveStatuses[r.slug].redirect}`).join(", ")}`);
         // Bez `html` - derywowane live przez komponenty
-        next[product.url] = {
-          ...box,
-          related: alive,
-          warnings: [...(box.warnings || []), `Usunięto ${dead.length} martwy(ch) slug(ów) (404 na sklepie): ${deadList}`]
-        };
+        next[product.url] = { ...box, related: alive, warnings };
       }
       return next;
     });
@@ -1831,7 +1811,7 @@ function App({ session, onLogout }) {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.4 · Rejestr artykułów (admin) + nasze strony jako kontekst
+                v4.5 · Kategorie po porządkach SLP-337 (130) + obsługa przekierowań
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1922,7 +1902,7 @@ function InputView({ input, setInput, onAnalyze }) {
         <p style={{ fontSize: 14, color: "#3a4a3a", marginTop: 10, lineHeight: 1.6 }}>
           Wkleić można pełny HTML wpisu blogowego ze sklepu lub fragment z linkami produktowymi.
           Narzędzie wykryje wszystkie produkty po wzorcu URL <code className="mono-font" style={inlineCode}>/p-XXX.html</code>,
-          a następnie dla każdego z nich wygeneruje box korzyści z propozycją 3 powiązań - wybranych ze 156 kategorii znajdujących się w bazie sklepu.
+          a następnie dla każdego z nich wygeneruje box korzyści z propozycją 3 powiązań - wybranych z {CATEGORIES.length} kategorii znajdujących się w bazie sklepu.
         </p>
       </div>
 
