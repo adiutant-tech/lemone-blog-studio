@@ -28,16 +28,16 @@ const EN = String.fromCharCode(0x2013); // półpauza, j.w.
 const DASH_RE = new RegExp(`[${EM}${EN}]`, "g");
 
 // Modele do wyboru (Worker ma tę samą białą listę). Formatowanie ma własne, bez zmian.
-const MODELS = {
+export const MODELS = {
   "claude-opus-5-5":   "Opus 5.5 (najwyższa jakość)",
   "claude-sonnet-5-5": "Sonnet 5.5 (szybszy, tańszy)",
   "claude-sonnet-4-6": "Sonnet 4.6 (poprzedni)",
 };
-const DEFAULT_MODEL = "claude-opus-5-5";
+export const DEFAULT_MODEL = "claude-opus-5-5";
 const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search" };
 // Koszt źródeł zależy od liczby wyszukiwań (każde to ok. 10 wyników z treścią na wejściu modelu),
 // nie od długości listy źródeł; dlatego limit dotyczy wyszukiwań.
-const SEARCH_DEPTH = {
+export const SEARCH_DEPTH = {
   szybkie:  { label: "Źródła: szybkie (2 wyszukiwania)", uses: 2 },
   standard: { label: "Źródła: standard (3 wyszukiwania)", uses: 3 },
   pelne:    { label: "Źródła: pełne (5 wyszukiwań)", uses: 5 },
@@ -198,14 +198,14 @@ function toContent(content) {
 // Ucięta odpowiedź (stop_reason "max_tokens") to błąd, nie wynik: wcześniej redakcja
 // po cichu gubiła końcówkę artykułu.
 // Przy web search obsługujemy "pause_turn" (wznowienie) i zbieramy cytowane źródła.
-async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, search = false, searchUses = 3, stage = "inne", track } = {}) {
+export async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, effort, search = false, searchUses = 3, stage = "inne", track } = {}) {
   if (STAGE_MODEL[stage]) model = STAGE_MODEL[stage];
   const messages = [{ role: "user", content: toContent(content) }];
   const texts = [];
   const sources = new Map();
   for (let round = 0; round < 4; round++) {
     const body = { model, max_tokens: maxTokens, messages, stream: true };
-    if (effortLow) body.output_config = { effort: "low" };
+    if (effort || effortLow) body.output_config = { effort: effort || "low" }; // myślenie liczy się do max_tokens
     if (search) body.tools = [{ ...WEB_SEARCH_TOOL, max_uses: searchUses }];
     const res = await apiFetch(apiUrl, {
       method: "POST",
@@ -255,7 +255,7 @@ function stripTags(html) {
   return (d.body.textContent || "").replace(/\s+/g, " ").trim();
 }
 
-function stripFences(text) {
+export function stripFences(text) {
   return text.replace(/^```html?\s*/i, "").replace(/\s*```$/, "").trim();
 }
 
@@ -640,8 +640,8 @@ const unitLabel = (u) => ({
 }[u.kind]);
 
 // Licznik kosztu przebiegu: suma i podział na etapy (szacunek z cennika API)
-const STAGE_LABEL = { "załączniki": "załączniki", "źródła": "źródła (web search)", konspekt: "konspekt", sekcje: "sekcje", redakcja: "redakcja (Sonnet 5.5)", faq: "FAQ (Sonnet 5.5)", notatka: "notatka" };
-function CostMeter({ costs, note }) {
+const STAGE_LABEL = { "załączniki": "załączniki", "źródła": "źródła (web search)", konspekt: "konspekt", sekcje: "sekcje", redakcja: "redakcja (Sonnet 5.5)", faq: "FAQ (Sonnet 5.5)", notatka: "notatka", weryfikacja: "weryfikacja (web search)", plan: "plan i tytuły", scenariusz: "scenariusz", pakiet: "pakiet i kontrola" };
+export function CostMeter({ costs, note }) {
   if (!costs.length) return null;
   const usd = (n) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const total = costs.reduce((s, c) => s + c.usd, 0);

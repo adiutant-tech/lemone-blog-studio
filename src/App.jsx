@@ -9,6 +9,8 @@ import Reviews, { SendForReview } from "./review.jsx";
 import { apiFetch, useSession, AUTH_ENABLED, LoginView, UserBar, AdminUsers } from "./auth.jsx";
 // v4.4: archiwum wszystkich wygenerowanych artykułów (tylko admin)
 import ArchiveModule from "./archive.jsx";
+// v4.6: scenariusze filmów YouTube (prompt matka z historią wersji)
+import ScenarioModule from "./scenario.jsx";
 import theme from "./theme.js";
 
 // Link do akceptacji: #/akceptacja/<id> (GitHub Pages bez routingu po ścieżce)
@@ -1811,7 +1813,7 @@ function App({ session, onLogout }) {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.5 · Kategorie po porządkach SLP-337 (130) + obsługa przekierowań
+                v4.6 · Scenariusz filmów YouTube + menu Artykuł
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1819,6 +1821,8 @@ function App({ session, onLogout }) {
                 ? `Wklej artykuł - dostaniesz boxy produktowe z powiązaniami z bazy ${CATEGORIES.length} kategorii`
                 : activeModule === "generator"
                   ? "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"
+                  : activeModule === "scenariusz"
+                  ? "Scenariusze filmów YouTube prowadzonych przez lekarza: weryfikacja, scenariusz, tekst do promptera"
                   : activeModule === "akceptacje"
                     ? "Artykuły wysłane do akceptacji: poprawki, decyzje, historia wersji"
                     : activeModule === "archiwum"
@@ -1829,7 +1833,7 @@ function App({ session, onLogout }) {
           <div style={{ flex: 1 }} />
           {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
           <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
-            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["archiwum", "Rejestr"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
+            {[["format", "Formatowanie"], ["generator", "Artykuł"], ["scenariusz", "Scenariusz"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["archiwum", "Rejestr"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
               <button key={key} onClick={() => { setActiveModule(key); if (key === "akceptacje" && !reviewId) openReview(null); }}
                 style={{
                   border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
@@ -1858,6 +1862,10 @@ function App({ session, onLogout }) {
             shared={{ normalizeDashes, buildFaqCmsJson, buildCompleteArticle, extractTocItems, generateFAQ }}
             onSendToFormat={(html) => { setInput(html); setActiveModule("format"); handleAnalyze(html); }}
           />
+        </div>
+        {/* Scenariusz też zostaje zamontowany: generacja trwa kilka minut i nie może zginąć przy zmianie zakładki */}
+        <div style={{ display: activeModule === "scenariusz" ? "block" : "none" }}>
+          <ScenarioModule shared={{ normalizeDashes }} session={session} />
         </div>
         {activeModule === "uzytkownicy" && session?.role === "admin" && <AdminUsers />}
         {activeModule === "archiwum" && session?.role === "admin" && <ArchiveModule shared={{ normalizeDashes, buildFaqCmsJson }} />}
