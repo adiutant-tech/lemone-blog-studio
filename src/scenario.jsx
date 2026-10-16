@@ -16,6 +16,8 @@ import { callModel, CostMeter, MODELS, DEFAULT_MODEL, SEARCH_DEPTH, stripFences 
 import { SCENARIUSZ_PROMPT_DEFAULT, SCENARIUSZ_FIELDS } from "./prompts/scenariusz.js";
 import { ROLKI, rolkaFields } from "./prompts/rolki.js";
 import { FORMATY, formatFields } from "./prompts/formaty.js";
+import { humanizeHtml, loadAntiSlopRules, ANTI_SLOP_PROMPT } from "./humanize.js";
+import { ANTI_SLOP_DEFAULT } from "./prompts/antiSlop.js";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" }) : "";
@@ -30,7 +32,7 @@ const FORMATS = {
       A: "A. KRÓTKI BRIEF", B: "B. TYTUŁY I MINIATURY", C: "C. DWA WARIANTY OTWARCIA", D: "D. PEŁNY SCENARIUSZ",
       E: "E. TEKST DO PROMPTERA", F: "F. PAKIET PUBLIKACYJNY", G: "G. KONTROLA JAKOŚCI", H: "H. PLAN OCENY PO PUBLIKACJI",
     },
-    table: "D", prompter: "E",
+    table: "D", prompter: "E", publish: null,
     tableHead: "<th>Czas (orientacyjny)</th><th>Tekst lekarza</th><th>Obraz, plansza lub napis</th><th>Źródło lub uwaga do weryfikacji</th>",
   },
   short: {
@@ -39,7 +41,7 @@ const FORMATS = {
       A: "A. BRIEF", B: "B. TRZY WARIANTY HOOKA", C: "C. SCENARIUSZ", D: "D. TEKST DO PROMPTERA LUB LEKTORA",
       E: "E. OPIS I HASHTAGI", F: "F. KONTROLA ZGODNOŚCI", G: "G. PLAN OCENY",
     },
-    table: "C", prompter: "D",
+    table: "C", prompter: "D", publish: "E",
     tableHead: "<th>Czas</th><th>Tekst mówiony lub lektor</th><th>Ujęcie i obraz</th><th>Napis na ekranie</th>",
   },
   shorts: {
@@ -48,7 +50,7 @@ const FORMATS = {
       A: "A. BRIEF", B: "B. TRZY WARIANTY HOOKA", C: "C. SCENARIUSZ", D: "D. TEKST DO PROMPTERA LUB LEKTORA",
       E: "E. TYTUŁ, OPIS I POWIĄZANY FILM", F: "F. KONTROLA ZGODNOŚCI", G: "G. PLAN OCENY",
     },
-    table: "C", prompter: "D",
+    table: "C", prompter: "D", publish: "E",
     tableHead: "<th>Czas</th><th>Tekst mówiony lub lektor</th><th>Ujęcie i obraz</th><th>Napis na ekranie</th>",
   },
   stories: {
@@ -57,7 +59,7 @@ const FORMATS = {
       A: "A. BRIEF", B: "B. TRZY POMYSŁY NA PIERWSZĄ PLANSZĘ", C: "C. SEKWENCJA PLANSZ", D: "D. TEKST DO NAGRANIA",
       E: "E. NAKLEJKI, LINK I WYRÓŻNIONE", F: "F. KONTROLA ZGODNOŚCI", G: "G. PLAN OCENY",
     },
-    table: "C", prompter: "D",
+    table: "C", prompter: "D", publish: "E",
     tableHead: "<th>Plansza i czas</th><th>Tekst mówiony lub lektor</th><th>Obraz</th><th>Napis i naklejka</th>",
   },
   ad: {
@@ -66,7 +68,7 @@ const FORMATS = {
       A: "A. BRIEF KAMPANII", B: "B. TRZY HOOKI DO TESTU A/B", C: "C. SCENARIUSZ", D: "D. TEKST LEKTORA",
       E: "E. TEKSTY REKLAMY I WERSJE FORMATÓW", F: "F. KONTROLA ZGODNOŚCI I ZASAD PLATFORM", G: "G. PLAN TESTU",
     },
-    table: "C", prompter: "D",
+    table: "C", prompter: "D", publish: "E",
     tableHead: "<th>Czas</th><th>Tekst lektora</th><th>Ujęcie i obraz</th><th>Napis na ekranie</th>",
   },
 };
@@ -198,19 +200,19 @@ async function fetchOwnPages(text) {
 }
 
 // === Prompt matka danego rodzaju: wersje z serwera, domyślny z pliku ===
-function usePrompt(kind) {
-  const K = kindOf(kind);
+function usePromptNamed(name, defaultText) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const load = async () => {
     setData(null); setError(null);
-    try { setData(await api(`/prompts/${K.promptName}`)); } catch (e) { setError(e.message); }
+    try { setData(await api(`/prompts/${name}`)); } catch (e) { setError(e.message); }
   };
-  useEffect(() => { load(); }, [K.promptName]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [name]); // eslint-disable-line react-hooks/exhaustive-deps
   const versions = data?.versions || [];
   const current = versions[versions.length - 1];
-  return { name: K.promptName, defaultText: K.defaultPrompt, versions, current, text: current ? current.text : K.defaultPrompt, version: current ? current.v : 0, setData, error, loaded: !!data };
+  return { name, defaultText, versions, current, text: current ? current.text : defaultText, version: current ? current.v : 0, setData, error, loaded: !!data };
 }
+const usePrompt = (kind) => { const K = kindOf(kind); return usePromptNamed(K.promptName, K.defaultPrompt); };
 
 function KindSelect({ value, onChange, withAll = false }) {
   return (
@@ -230,6 +232,8 @@ export default function ScenarioModule({ shared, session }) {
   const [openId, setOpenId] = useState(null);
   const [kind, setKind] = useState(() => { const k = lsGet("lemone_scen_kind", "lekarz-yt"); return KINDS[k] ? k : "lekarz-yt"; });
   const prompt = usePrompt(kind);
+  const antiSlop = usePromptNamed(ANTI_SLOP_PROMPT, ANTI_SLOP_DEFAULT);
+  const [promptView, setPromptView] = useState("rodzaj"); // rodzaj | humanizacja
   const [who, setWho] = useState(() => lsGet("lemone_review_name"));
   const author = session?.email || who.trim();
   const P = theme.profile[kindOf(kind).cel];
@@ -248,7 +252,13 @@ export default function ScenarioModule({ shared, session }) {
             </button>
           ))}
         </div>
-        {tab !== "lista" && <KindSelect value={kind} onChange={(k) => { setKind(k); lsSet("lemone_scen_kind", k); }} />}
+        {tab === "prompt" && (
+          <select value={promptView} onChange={e => setPromptView(e.target.value)} style={{ ...ui.input, width: "auto" }} aria-label="Który prompt">
+            <option value="rodzaj">Prompt matka rodzaju</option>
+            <option value="humanizacja">Zasady humanizacji (no-ai-slop)</option>
+          </select>
+        )}
+        {tab !== "lista" && !(tab === "prompt" && promptView === "humanizacja") && <KindSelect value={kind} onChange={(k) => { setKind(k); lsSet("lemone_scen_kind", k); }} />}
         <div style={{ flex: 1 }} />
         {!session && (
           <input value={who} onChange={e => { setWho(e.target.value); lsSet("lemone_review_name", e.target.value); }}
@@ -261,7 +271,13 @@ export default function ScenarioModule({ shared, session }) {
       {tab === "lista" && (openId
         ? <ScriptEditor id={openId} shared={shared} author={author} onBack={() => setOpenId(null)} />
         : <ScriptList onOpen={setOpenId} session={session} />)}
-      {tab === "prompt" && <PromptEditor key={kind} kind={kind} prompt={prompt} author={author} />}
+      {tab === "prompt" && (promptView === "humanizacja"
+        ? <PromptEditor key="anti-slop" prompt={antiSlop} author={author} profile={P}
+            title="Zasady humanizacji (no-ai-slop)" source="src/prompts/antiSlop.js"
+            intro="Wspólne dla przycisku Humanizacja w artykułach i scenariuszach. Każdy zapis tworzy nową wersję w historii." />
+        : <PromptEditor key={kind} prompt={prompt} author={author} profile={P}
+            title={`Prompt matka: ${kindOf(kind).label}`} source={kindOf(kind).source}
+            intro="Wspólny dla wszystkich. Każdy zapis tworzy nową wersję w historii; poprzednie zostają i można je przywrócić." />)}
     </div>
   );
 }
@@ -464,6 +480,8 @@ function ScriptEditor({ id, shared, author, onBack }) {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(null);
+  const [humanizeStep, setHumanizeStep] = useState(null);
+  const [humanizeErr, setHumanizeErr] = useState(null);
   const editorRef = useRef(null);
 
   useEffect(() => { (async () => { try { setX(await api(`/scripts/${id}`)); } catch (e) { setError(e.message); } })(); }, [id]);
@@ -492,6 +510,30 @@ function ScriptEditor({ id, shared, author, onBack }) {
     } catch (e) { setError(e.message); }
     setBusy(false);
   };
+  // Humanizacja (no-ai-slop): tekst mówiony z tabeli i opis do publikacji; wynik = nowa wersja
+  const humanize = async () => {
+    setHumanizeErr(null);
+    setHumanizeStep("Wczytuję zasady humanizacji...");
+    try {
+      const rules = await loadAntiSlopRules();
+      let usd = 0;
+      const res = await humanizeHtml(current.html, {
+        callModel, rules, mode: "script", format: F, klinika: K.cel === "klinika",
+        track: (e) => { usd += e.usd; },
+        onProgress: (p) => setHumanizeStep(`Humanizacja: ${p.label} (${p.current}/${p.total})`),
+      });
+      if (!res.changed) { setSaved("Humanizacja nie znalazła nic do poprawy; wersja bez zmian."); }
+      else {
+        const html = rebuildPrompter(shared.normalizeDashes(res.html), K.format);
+        const updated = await api(`/scripts/${id}`, { html, by: author });
+        setX(updated); setViewV(null); setDirty(false);
+        setSaved(`Humanizacja zapisana jako wersja ${updated.versions.length} (poprawione fragmenty: ${res.changed}, koszt ${usdFmt(usd)} USD). Poprzednia wersja jest w historii.`);
+      }
+      setTimeout(() => setSaved(null), 8000);
+    } catch (e) { setHumanizeErr(`Humanizacja nie powiodła się: ${e.message}. Scenariusz bez zmian; możesz spróbować ponownie.`); }
+    setHumanizeStep(null);
+  };
+
   const download = () => {
     const blob = new Blob([`<!doctype html>\n<html lang="pl"><head><meta charset="utf-8"><title>${(x.title || "scenariusz").replace(/</g, "")}</title></head><body>\n${shown.html}\n</body></html>`], { type: "text/html" });
     const a = document.createElement("a");
@@ -530,12 +572,19 @@ function ScriptEditor({ id, shared, author, onBack }) {
             </button>
           ))}
         </div>
+        <button onClick={humanize} disabled={!isCurrent || dirty || busy || !!humanizeStep}
+          style={{ ...ui.btnSecondary, ...(!isCurrent || dirty || busy || humanizeStep ? ui.btnDisabled : {}) }}
+          title={dirty ? "Najpierw zapisz zmiany" : isCurrent ? "Przeredaguj tekst mówiony i opis według zasad no-ai-slop (nowa wersja)" : "Humanizacja działa na bieżącej wersji"}>
+          {humanizeStep ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} Humanizacja
+        </button>
         <button onClick={save} disabled={!isCurrent || !dirty || busy} style={{ ...ui.btnPrimary(P), ...(!isCurrent || !dirty || busy ? ui.btnDisabled : {}) }}
           title={isCurrent ? (dirty ? "" : "Brak zmian do zapisania") : "Edytować można tylko bieżącą wersję"}>
           {busy ? <Loader2 size={14} className="spin" /> : <Save size={14} />} Zapisz zmiany
         </button>
       </div>
+      {humanizeStep && <p style={{ ...ui.help, margin: 0, color: theme.color.text }}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> {humanizeStep}</p>}
       {saved && <div style={ui.banner("info")}>{saved}</div>}
+      {humanizeErr && <div style={ui.banner("danger")}>{humanizeErr}</div>}
       {!isCurrent && <p style={{ ...ui.help, margin: 0 }}>Podgląd starszej wersji {shown.v}: tylko do odczytu.</p>}
       <p style={{ ...ui.help, margin: 0 }}>Tekst do promptera ({F.prompter}) składa się z drugiej kolumny tabeli scenariusza ({F.table}) przy każdym zapisie: poprawiaj wypowiedzi w tabeli.</p>
       <div style={{ ...ui.card, maxHeight: 760, overflow: "auto" }} className="scroll-thin scenario-doc">
@@ -553,9 +602,7 @@ function ScriptEditor({ id, shared, author, onBack }) {
 }
 
 // === Prompt matka wybranego rodzaju: edycja, zapis jako nowa wersja, historia dla wszystkich ===
-function PromptEditor({ kind, prompt, author }) {
-  const K = kindOf(kind);
-  const P = theme.profile[K.cel];
+function PromptEditor({ prompt, author, profile: P, title, source, intro }) {
   const [text, setText] = useState(prompt.text);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -571,7 +618,7 @@ function PromptEditor({ kind, prompt, author }) {
       const res = await api(`/prompts/${prompt.name}`, { text, note, by: author });
       prompt.setData(res);
       setNote("");
-      setSaved(`Zapisano jako wersję ${res.versions.length}. Nowe scenariusze tego rodzaju używają jej od teraz.`);
+      setSaved(`Zapisano jako wersję ${res.versions.length}. Obowiązuje od teraz.`);
       setTimeout(() => setSaved(null), 3500);
     } catch (e) { setError(e.message); }
     setBusy(false);
@@ -581,8 +628,8 @@ function PromptEditor({ kind, prompt, author }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(260px, 340px)", gap: theme.space(2), alignItems: "start" }}>
       <div style={ui.card}>
-        <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 4px", fontFamily: theme.font.heading }}>Prompt matka: {K.label}</h2>
-        <p style={{ ...ui.help, marginTop: 0 }}>Wspólny dla wszystkich. Każdy zapis tworzy nową wersję w historii; poprzednie zostają i można je przywrócić.</p>
+        <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 4px", fontFamily: theme.font.heading }}>{title}</h2>
+        <p style={{ ...ui.help, marginTop: 0 }}>{intro}</p>
         {prompt.error && <div style={ui.banner("danger")}>Nie wczytano historii: {prompt.error}</div>}
         {!prompt.loaded && !prompt.error && <p style={ui.help}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> Wczytuję...</p>}
         <textarea value={text} onChange={e => setText(e.target.value)} rows={28} spellCheck={false} disabled={!prompt.loaded}
@@ -614,7 +661,7 @@ function PromptEditor({ kind, prompt, author }) {
         ))}
         <div style={{ borderTop: `1px solid ${theme.color.border}`, padding: "8px 0" }}>
           <div style={{ fontSize: theme.size.small + 1 }}><strong>Wersja domyślna</strong>{!prompt.current ? " · bieżąca" : ""}</div>
-          <div style={ui.help}>z aplikacji ({K.source})</div>
+          <div style={ui.help}>z aplikacji ({source})</div>
           {prompt.current && <button onClick={() => { setText(prompt.defaultText); setNote("Przywrócenie wersji domyślnej"); }} style={{ ...ui.btnSecondary, padding: "3px 8px", fontSize: theme.size.small, marginTop: 4 }}><RotateCcw size={11} /> Przywróć do edycji</button>}
         </div>
       </div>
