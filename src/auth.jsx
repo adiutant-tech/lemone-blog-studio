@@ -11,7 +11,7 @@ import { useState, useEffect, useRef } from "react";
 import { LogOut, Users, Trash2, Loader2, AlertCircle, RefreshCw, UserPlus } from "lucide-react";
 import theme, { ui } from "./theme.js";
 
-export const GOOGLE_CLIENT_ID = "";
+export const GOOGLE_CLIENT_ID = "501803772195-i7c2f25jh8fj010p5cgv2al4b2sd1c9o.apps.googleusercontent.com";
 export const AUTH_ENABLED = !!GOOGLE_CLIENT_ID;
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
