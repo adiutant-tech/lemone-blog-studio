@@ -20,7 +20,7 @@ async function api(path, body) {
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
     : undefined);
   const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(j.error === "admin-only" ? "Archiwum jest dostępne tylko dla admina." : (j.error || `HTTP ${res.status}`));
+  if (!res.ok) throw new Error(j.error === "admin-only" ? "Rejestr jest dostępny tylko dla admina." : (j.error || `HTTP ${res.status}`));
   return j;
 }
 
@@ -51,7 +51,7 @@ function ArticleList({ onOpen }) {
     <div className="fade-in" style={ui.card}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: theme.space(2) }}>
         <ArchiveIcon size={16} color={theme.color.accentHover} />
-        <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Archiwum artykułów</h2>
+        <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Rejestr artykułów</h2>
         <div style={{ flex: 1 }} />
         <input value={q} onChange={e => setQ(e.target.value)} style={{ ...ui.input, width: 240 }} placeholder="Szukaj: tytuł, autor, typ" />
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
@@ -63,7 +63,7 @@ function ArticleList({ onOpen }) {
           {shown.length} artykułów{needle ? " (filtr)" : ""} · łączny koszt generacji: {usd(total)} USD
         </p>
       )}
-      {items && shown.length === 0 && <p style={ui.help}>Brak artykułów. Archiwum wypełnia się automatycznie po każdej generacji.</p>}
+      {items && shown.length === 0 && <p style={ui.help}>Brak artykułów. Rejestr wypełnia się automatycznie po każdej generacji.</p>}
       {shown.map(it => (
         <button key={it.id} onClick={() => onOpen(it.id)}
           style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, width: "100%", textAlign: "left", background: "transparent", border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, padding: "10px 12px", marginBottom: 8, cursor: "pointer", fontFamily: "inherit", color: theme.color.text }}>
@@ -120,7 +120,7 @@ function ArticleDetail({ id, shared, onBack }) {
   if (error) return (
     <div style={ui.card}>
       <div style={ui.banner("danger")}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>
-      <button onClick={onBack} style={{ ...ui.btnSecondary, marginTop: 12 }}><ArrowLeft size={13} /> Archiwum</button>
+      <button onClick={onBack} style={{ ...ui.btnSecondary, marginTop: 12 }}><ArrowLeft size={13} /> Rejestr</button>
     </div>
   );
   if (!a) return <div style={ui.card}><Loader2 size={16} className="spin" /> Wczytuję artykuł...</div>;
@@ -149,7 +149,7 @@ function ArticleDetail({ id, shared, onBack }) {
   return (
     <div className="fade-in" style={{ display: "grid", gap: theme.space(2) }}>
       <div style={ui.card}>
-        <button onClick={onBack} style={{ ...ui.btnSecondary, padding: "4px 10px", marginBottom: 12 }}><ArrowLeft size={12} /> Archiwum</button>
+        <button onClick={onBack} style={{ ...ui.btnSecondary, padding: "4px 10px", marginBottom: 12 }}><ArrowLeft size={12} /> Rejestr</button>
         <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 6px", fontFamily: theme.font.heading }}>{a.title || "(bez tytułu)"}</h2>
         <p style={{ ...ui.help, margin: 0 }}>
           {TYP_LABEL[a.typ] || a.typ} · autor: {a.author} · {fmt(a.createdAt)} · model: {a.model || "-"} · koszt: {usd(a.usd)} USD

@@ -1831,7 +1831,7 @@ function App({ session, onLogout }) {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.4 · Archiwum artykułów (admin)
+                v4.4 · Rejestr artykułów (admin) + nasze strony jako kontekst
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1849,7 +1849,7 @@ function App({ session, onLogout }) {
           <div style={{ flex: 1 }} />
           {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
           <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
-            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["archiwum", "Archiwum"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
+            {[["format", "Formatowanie"], ["generator", "Generator"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["archiwum", "Rejestr"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
               <button key={key} onClick={() => { setActiveModule(key); if (key === "akceptacje" && !reviewId) openReview(null); }}
                 style={{
                   border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
