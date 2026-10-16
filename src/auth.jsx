@@ -10,8 +10,9 @@
 import { useState, useEffect, useRef } from "react";
 import { LogOut, Users, Trash2, Loader2, AlertCircle, RefreshCw, UserPlus } from "lucide-react";
 import theme, { ui } from "./theme.js";
+import { LemoneLogo, CitrusDecor, citrusBar } from "./logo.jsx";
 
-export const GOOGLE_CLIENT_ID = "";
+export const GOOGLE_CLIENT_ID = "501803772195-i7c2f25jh8fj010p5cgv2al4b2sd1c9o.apps.googleusercontent.com";
 export const AUTH_ENABLED = !!GOOGLE_CLIENT_ID;
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
@@ -109,13 +110,20 @@ export function LoginView({ onLogin }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: theme.color.bg, padding: 16 }}>
-      <div style={{ ...ui.card, maxWidth: 420, width: "100%", textAlign: "center" }}>
-        <h1 style={{ fontFamily: theme.font.heading, fontSize: 22, margin: "0 0 6px" }}>Lemoné Blog Studio</h1>
-        <p style={{ ...ui.help, marginBottom: 20 }}>Dostęp tylko dla zaproszonych kont Google.</p>
+    <div style={{ position: "relative", overflow: "hidden", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: `radial-gradient(circle at 20% 15%, ${theme.color.citrusWash}, ${theme.color.bg} 60%)`, padding: 16 }}>
+      {/* v4.10: plastry cytrusów w tle ekranu logowania */}
+      <CitrusDecor size={420} opacity={0.16} style={{ left: -140, top: -150 }} />
+      <CitrusDecor size={300} opacity={0.12} style={{ right: -90, bottom: -110 }} />
+      <CitrusDecor size={110} opacity={0.14} style={{ right: "18%", top: "12%" }} />
+      <div style={{ ...ui.card, position: "relative", maxWidth: 420, width: "100%", textAlign: "center", padding: 0, overflow: "hidden", boxShadow: theme.shadow.raised }}>
+        <div style={{ height: 5, background: citrusBar }} />
+        <div style={{ padding: "32px 28px 28px" }}>
+        <h1 style={{ margin: "0 0 18px", display: "flex", justifyContent: "center" }}><LemoneLogo size={58} /></h1>
+        <p style={{ ...ui.help, fontFamily: theme.font.body, marginBottom: 20 }}>Dostęp tylko dla zaproszonych kont Google.</p>
         <div ref={btnRef} style={{ display: "flex", justifyContent: "center", minHeight: 44 }} />
         {busy && <p style={ui.help}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> Sprawdzam dostęp...</p>}
         {error && <div style={{ ...ui.banner("danger"), marginTop: 16, textAlign: "left" }}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
+        </div>
       </div>
     </div>
   );

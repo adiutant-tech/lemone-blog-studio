@@ -12,6 +12,14 @@ const theme = {
     accentSoft: "#eef8dd",    // tinta limonki ~12%: tła informacyjne, podświetlenia
     yellow: "#f9e01d",        // oszczędnie: highlight, nigdy tło długiego tekstu
 
+    // Cytrusy (v4.10): znak marki (plaster), pasek nagłówka, dekoracje
+    lemon: "#f9e01d",         // skórka cytryny, start gradientu
+    lemonLight: "#fff3a6",    // miąższ segmentu (rozjaśnienie do środka)
+    lime: "#9bd52e",          // limonka w segmentach
+    pith: "#fffbe8",          // albedo (biały pierścień pod skórką)
+    leaf: "#3f7d2e",          // listek
+    citrusWash: "#fffbea",    // tło nagłówka (ciepła cytrynowa poświata)
+
     // Tekst
     text: "#1d1d1b",
     textSecondary: "#5a4d45", // brąz z brandbooku

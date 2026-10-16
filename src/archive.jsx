@@ -8,10 +8,10 @@ import { useState, useEffect, useRef } from "react";
 import { Archive as ArchiveIcon, ArrowLeft, Loader2, AlertCircle, RefreshCw, Save, Download, Code2, Eye } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
-import { sanitizeHtml, CopyButton } from "./review.jsx";
+import { sanitizeHtml, CopyButton } from "./shared.jsx";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
-const TYP_LABEL = { edukacyjny: "Edukacyjny", lifestylowy: "Lifestylowy", ranking: "Ranking (szkic)", klinika: "Klinika" };
+const TYP_LABEL = { edukacyjny: "Edukacyjny", lifestylowy: "Lifestylowy", ranking: "Ranking (szkic)", klinika: "Klinika", formatowanie: "Formatowanie" };
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" }) : "";
 const usd = (n) => (Number(n) || 0).toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -70,7 +70,7 @@ function ArticleList({ onOpen }) {
           <div>
             <div style={{ fontWeight: 600, fontSize: theme.size.body }}>{it.title || "(bez tytułu)"}</div>
             <div style={{ ...ui.help, margin: "3px 0 0" }}>
-              {TYP_LABEL[it.typ] || it.typ} · {it.author} · {fmt(it.createdAt)}{it.v > 1 ? ` · wersja ${it.v} (edytowany ${fmt(it.updatedAt)})` : ""}
+              {TYP_LABEL[it.typ] || it.typ} · {it.author} · {fmt(it.createdAt)}{it.accepted ? ` · zaakceptował(a): ${it.acceptedBy}` : " · bez akceptacji"}{it.v > 1 ? ` · wersja ${it.v} (edytowany ${fmt(it.updatedAt)})` : ""}
             </div>
           </div>
           <div style={{ alignSelf: "center", ...ui.help, margin: 0 }}>{usd(it.usd)} USD</div>
@@ -155,6 +155,12 @@ function ArticleDetail({ id, shared, onBack }) {
           {TYP_LABEL[a.typ] || a.typ} · autor: {a.author} · {fmt(a.createdAt)} · model: {a.model || "-"} · koszt: {usd(a.usd)} USD
           {a.keyword ? ` · fraza: ${a.keyword}` : ""}
         </p>
+        {a.accepted && (
+          <p style={{ ...ui.help, color: theme.color.text }}>
+            <strong>Zaakceptował(a):</strong> {a.accepted.by}, {fmt(a.accepted.at)} · checklista: {a.accepted.checks?.length || 0} pkt · piśmiennictwo: {a.accepted.sources?.length || 0}
+            {a.accepted.signature ? ` · podpis: ${a.accepted.signature}` : ""}{a.accepted.via ? ` · ${a.accepted.via}` : ""}
+          </p>
+        )}
         {a.topic && <p style={{ ...ui.help, whiteSpace: "pre-wrap" }}><strong>Temat:</strong> {a.topic}</p>}
       </div>
 
