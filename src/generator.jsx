@@ -18,6 +18,7 @@ import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, Chevron
 import theme, { ui } from "./theme.js";
 import { AcceptPanel } from "./shared.jsx"; // akceptacja autora i zapis w Rejestrze (v4.8)
 import { apiFetch } from "./auth.jsx";
+import { humanizeHtml, loadAntiSlopRules } from "./humanize.js"; // humanizacja no-ai-slop na żądanie (v4.13)
 import { DZIEDZINY } from "./prompts/klinika.js";
 
 const apiUrl = import.meta.env.VITE_API_URL || "https://api.anthropic.com/v1/messages";
@@ -640,7 +641,7 @@ const unitLabel = (u) => ({
 }[u.kind]);
 
 // Licznik kosztu przebiegu: suma i podział na etapy (szacunek z cennika API)
-const STAGE_LABEL = { "załączniki": "załączniki", "źródła": "źródła (web search)", konspekt: "konspekt", sekcje: "sekcje", redakcja: "redakcja (Sonnet 5.5)", faq: "FAQ (Sonnet 5.5)", notatka: "notatka", weryfikacja: "weryfikacja (web search)", plan: "plan i tytuły", scenariusz: "scenariusz", pakiet: "pakiet i kontrola" };
+const STAGE_LABEL = { "załączniki": "załączniki", "źródła": "źródła (web search)", konspekt: "konspekt", sekcje: "sekcje", redakcja: "redakcja (Sonnet 5.5)", humanizacja: "humanizacja (Sonnet 5.5)", faq: "FAQ (Sonnet 5.5)", notatka: "notatka", weryfikacja: "weryfikacja (web search)", plan: "plan i tytuły", scenariusz: "scenariusz", pakiet: "pakiet i kontrola" };
 export function CostMeter({ costs, note }) {
   if (!costs.length) return null;
   const usd = (n) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -738,6 +739,8 @@ export default function Generator({ shared, onSendToFormat }) {
   const [costs, setCosts] = useState([]);
   const track = (e) => setCosts(c => [...c, e]);
   const opts = (o = {}) => ({ model, track, ...o });
+  const [humanizeStep, setHumanizeStep] = useState(null);
+  const [humanizeMsg, setHumanizeMsg] = useState(null);
 
   // Akceptacja autora (v4.8): po checkliście jeden przycisk zapisuje artykuł w Rejestrze;
   // acceptedHtml = treść do CMS z piśmiennictwem i podpisem (klinika). Nowy wynik zeruje akceptację.
@@ -916,8 +919,32 @@ export default function Generator({ shared, onSendToFormat }) {
     return out;
   };
 
+  // Humanizacja (no-ai-slop) na żądanie, po generacji; oryginał zostaje do cofnięcia
+  const humanize = async () => {
+    setHumanizeMsg(null);
+    setHumanizeStep("Wczytuję zasady humanizacji...");
+    try {
+      const rules = await loadAntiSlopRules();
+      const res = await humanizeHtml(result.html, {
+        callModel, rules, keyword, klinika: isKlinika, track,
+        onProgress: (p) => setHumanizeStep(`Humanizacja: ${p.label} (${p.current}/${p.total})`),
+      });
+      const html = shared.normalizeDashes(res.html);
+      setResult(r => ({ ...r, html, words: stripTags(html).split(/s+/).filter(Boolean).length, humanizedFrom: r.humanizedFrom || r.html }));
+      setHumanizeMsg({ ok: true, text: `Humanizacja gotowa: poprawione fragmenty ${res.changed}${res.removed ? `, usunięte ${res.removed}` : ""}. Nagłówki, linki, boxy, spis treści i FAQ bez zmian.` });
+    } catch (e) {
+      setHumanizeMsg({ ok: false, text: `Humanizacja nie powiodła się: ${e.message}. Artykuł bez zmian; możesz spróbować ponownie.` });
+    }
+    setHumanizeStep(null);
+  };
+  const undoHumanize = () => {
+    setResult(r => ({ ...r, html: r.humanizedFrom, words: stripTags(r.humanizedFrom).split(/s+/).filter(Boolean).length, humanizedFrom: undefined }));
+    setHumanizeMsg({ ok: true, text: "Przywrócono wersję sprzed humanizacji." });
+  };
+
   const finishPipeline = async (parts, units) => {
     setPhase("finishing");
+    setHumanizeMsg(null);
     const f = formData();
     // Ponowienie po błędzie nie powtarza kroków, które już się udały (redakcja, FAQ)
     const sig = parts.join("\n<!--unit-->\n") + `|redline:${redline}`;
@@ -1436,6 +1463,21 @@ export default function Generator({ shared, onSendToFormat }) {
                   note: result.note || "", sources: result.sources || [],
                 }} />
               )}
+
+              <div style={{ ...ui.card, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <button onClick={humanize} disabled={!!humanizeStep || !!acceptedHtml}
+                  style={{ ...ui.btnPrimary(P), ...(humanizeStep || acceptedHtml ? ui.btnDisabled : {}) }}
+                  title={acceptedHtml ? "Artykuł jest już zaakceptowany; humanizację robi się przed akceptacją" : "Przeredaguj tekst według zasad no-ai-slop"}>
+                  {humanizeStep ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} {result.humanizedFrom ? "Humanizacja ponownie" : "Humanizacja"}
+                </button>
+                {result.humanizedFrom && !humanizeStep && !acceptedHtml && (
+                  <button onClick={undoHumanize} style={ui.btnSecondary}><RotateCcw size={13} /> Cofnij humanizację</button>
+                )}
+                <span style={{ ...ui.help, margin: 0, flex: "1 1 260px" }}>
+                  {humanizeStep || (acceptedHtml ? "Zaakceptowany artykuł nie przechodzi już humanizacji." : "Przeredagowanie stylu według zasad no-ai-slop (Sonnet 5.5, kilka centów). Fakty, nagłówki, linki, boxy i FAQ zostają bez zmian.")}
+                </span>
+                {humanizeMsg && <div style={{ ...ui.banner(humanizeMsg.ok ? "info" : "danger"), flexBasis: "100%" }}>{humanizeMsg.text}</div>}
+              </div>
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 {result.draft ? (
