@@ -9,7 +9,7 @@ import { useState, useEffect, useRef } from "react";
 import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
-import { sanitizeHtml, CopyButton } from "./review.jsx";
+import { sanitizeHtml, CopyButton } from "./shared.jsx";
 import { callModel, CostMeter, MODELS, DEFAULT_MODEL, SEARCH_DEPTH, stripFences } from "./generator.jsx";
 import { SCENARIUSZ_PROMPT_DEFAULT, SCENARIUSZ_FIELDS } from "./prompts/scenariusz.js";
 

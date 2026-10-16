@@ -16,7 +16,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, RotateCcw, Search, Paperclip, Upload, Youtube, Image as ImageIcon, X, Link2 } from "lucide-react";
 import theme, { ui } from "./theme.js";
-import { SendForReview } from "./review.jsx"; // bramka weryfikacji jest u akceptującego (v4.1)
+import { AcceptPanel } from "./shared.jsx"; // akceptacja autora i zapis w Rejestrze (v4.8)
 import { apiFetch } from "./auth.jsx";
 import { DZIEDZINY } from "./prompts/klinika.js";
 
@@ -739,22 +739,10 @@ export default function Generator({ shared, onSendToFormat }) {
   const track = (e) => setCosts(c => [...c, e]);
   const opts = (o = {}) => ({ model, track, ...o });
 
-  // Archiwum (v4.4): każdy gotowy artykuł zapisuje się automatycznie; przegląda je admin
-  const [archived, setArchived] = useState(null); // null | "saving" | "ok" | "error"
-  useEffect(() => {
-    if (!result) { setArchived(null); return; }
-    setArchived("saving");
-    apiFetch(`${apiUrl.replace(/\/$/, "")}/articles`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        kind: isKlinika ? "klinika" : "sklep", typ, model,
-        title: outline?.chosenH1 || topic.slice(0, 120), keyword, topic,
-        html: result.html, faqItems: result.faqItems || [], note: result.note || "", sources: result.sources || [],
-        usd: costs.reduce((sum, c) => sum + c.usd, 0),
-      }),
-    }).then(r => setArchived(r.ok ? "ok" : "error")).catch(() => setArchived("error"));
-  }, [result]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Akceptacja autora (v4.8): po checkliście jeden przycisk zapisuje artykuł w Rejestrze;
+  // acceptedHtml = treść do CMS z piśmiennictwem i podpisem (klinika). Nowy wynik zeruje akceptację.
+  const [acceptedHtml, setAcceptedHtml] = useState(null);
+  useEffect(() => { setAcceptedHtml(null); }, [result]);
 
   const addFiles = async (fileList) => {
     setAttError(null);
@@ -1003,8 +991,8 @@ export default function Generator({ shared, onSendToFormat }) {
     setError(null); setWarning(null); setProgress(null); setFailed(false);
   };
 
-  // Klinika: kopiowanie do CMS wyłącznie po akceptacji (zakładka Akceptacje)
-  const locked = isKlinika && !!result;
+  // Klinika: kopiowanie do CMS wyłącznie po akceptacji autora (checklista + piśmiennictwo)
+  const locked = isKlinika && !!result && !acceptedHtml;
 
   // Mini-checklist jakości (specyfikacja: testy Etapu 1); w rankingu bez kart produktów
   const checks = useMemo(() => {
@@ -1410,8 +1398,8 @@ export default function Generator({ shared, onSendToFormat }) {
                 </div>
               ) : isKlinika ? (
                 <div style={ui.banner("warning")}>
-                  <strong>Treść medyczna: wymaga akceptacji lekarza przed publikacją.</strong>{" "}
-                  Wyślij ją do akceptacji poniżej; kopiowanie do CMS odblokuje się w zakładce Akceptacje po zatwierdzeniu.
+                  <strong>Treść medyczna: przed publikacją przejdź checklistę akceptacji poniżej.</strong>{" "}
+                  Akceptacja zapisuje artykuł w rejestrze i odblokowuje kopiowanie do CMS (z wybranym piśmiennictwem).
                   FAQ jest w treści HTML (format bezpieczny, bez skryptów). Notatka dla lekarza nie trafia do treści.
                 </div>
               ) : (
@@ -1437,14 +1425,13 @@ export default function Generator({ shared, onSendToFormat }) {
                   {!result.draft && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>FAQ: {checks.faq} pytań</span>}
                   {isKlinika && <span style={ui.pill(theme.color.accentSoft, theme.color.text)}>źródła: {result.sources?.length || 0}</span>}
                   <div style={{ flexBasis: "100%" }}><CostMeter costs={costs} note={isKlinika || result.draft ? "" : "bez FAQ z Formatowania"} /></div>
-                  {archived && <div style={{ flexBasis: "100%", ...ui.help, margin: 0 }}>{{ saving: "Zapisuję w rejestrze...", ok: "Zapisano w rejestrze artykułów.", error: "Nie udało się zapisać w rejestrze (artykuł jest nadal na ekranie)." }[archived]}</div>}
                 </div>
               )}
 
               {!result.draft && (
-                <SendForReview profile={P} payload={{
-                  kind: isKlinika ? "klinika" : "sklep",
-                  title: outline.chosenH1, topic, keyword,
+                <AcceptPanel kind={isKlinika ? "klinika" : "sklep"} profile={P} onAccepted={setAcceptedHtml} payload={{
+                  typ, model, title: outline.chosenH1, topic, keyword,
+                  usd: costs.reduce((sum, c) => sum + c.usd, 0),
                   html: result.html, faqItems: result.faqItems,
                   note: result.note || "", sources: result.sources || [],
                 }} />
@@ -1462,9 +1449,9 @@ export default function Generator({ shared, onSendToFormat }) {
                   </>
                 ) : (
                   <>
-                    <button onClick={() => !locked && copyText(result.html, setCopiedArt)} disabled={locked}
+                    <button onClick={() => !locked && copyText(acceptedHtml || result.html, setCopiedArt)} disabled={locked}
                       style={{ ...ui.btnPrimary(P), ...(locked ? ui.btnDisabled : {}) }}
-                      title={locked ? "Treść medyczna: skopiujesz ją po akceptacji, w zakładce Akceptacje" : ""}>
+                      title={locked ? "Treść medyczna: skopiujesz ją po akceptacji (checklista powyżej)" : ""}>
                       {copiedArt ? <Check size={14} /> : <Copy size={14} />} {copiedArt ? "Skopiowano" : "Kopiuj pełny artykuł"}
                     </button>
                     {!isKlinika && (

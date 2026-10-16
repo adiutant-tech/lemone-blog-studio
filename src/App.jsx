@@ -3,8 +3,8 @@ import { Copy, Check, FileText, Sparkles, AlertCircle, Loader2, RefreshCw, Chevr
 // v4.0: moduł Generator (osobny plik) + design system (specyfikacja v4.0-v2, sekcja 9).
 // Funkcje wspólne idą do Generatora PRZEZ PROPS (bez eksportów nazwanych i bez cyklu importów).
 import Generator from "./generator.jsx";
-// v4.1: moduł Akceptacje (osobny plik; wspólne funkcje też przez props)
-import Reviews, { SendForReview } from "./review.jsx";
+// v4.8: akceptacja autora (checklista) zapisuje artykuł w Rejestrze; dawny obieg Akceptacji usunięty
+import { AcceptPanel } from "./shared.jsx";
 // v4.2: logowanie Google (lista zaproszonych, role admin/edytor)
 import { apiFetch, useSession, AUTH_ENABLED, LoginView, UserBar, AdminUsers } from "./auth.jsx";
 // v4.4: archiwum wszystkich wygenerowanych artykułów (tylko admin)
@@ -12,12 +12,6 @@ import ArchiveModule from "./archive.jsx";
 // v4.6: scenariusze filmów YouTube (prompt matka z historią wersji)
 import ScenarioModule from "./scenario.jsx";
 import theme from "./theme.js";
-
-// Link do akceptacji: #/akceptacja/<id> (GitHub Pages bez routingu po ścieżce)
-const reviewIdFromHash = () => {
-  const m = window.location.hash.match(/^#\/akceptacja\/([A-Za-z0-9_-]{16})/);
-  return m ? m[1] : null;
-};
 
 // === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) - REVERTED z 1149 do oryginału ===
 // 2026-10-16 (SLP-337, kontrola blog_studio_kategorie_kontrola_v1.csv + stan na żywo): 130 wpisów.
@@ -1595,19 +1589,7 @@ export default function Root() {
 function App({ session, onLogout }) {
   // v4.0: dwa moduły w jednej aplikacji. "format" = dotychczasowe Formatowanie,
   // "generator" = generacja artykułów z promptów (Etap 1: Sklep/Edukacyjny).
-  // v4.1: "akceptacje" = lista zgłoszeń i ekran akceptacji (link #/akceptacja/<id>)
-  const [activeModule, setActiveModule] = useState(() => reviewIdFromHash() ? "akceptacje" : "format");
-  const [reviewId, setReviewId] = useState(reviewIdFromHash);
-  useEffect(() => {
-    const onHash = () => {
-      const id = reviewIdFromHash();
-      setReviewId(id);
-      if (id) setActiveModule("akceptacje");
-    };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-  const openReview = (id) => { window.location.hash = id ? `#/akceptacja/${id}` : "#/akceptacje"; setReviewId(id); };
+  const [activeModule, setActiveModule] = useState("format");
   const [step, setStep] = useState("input");
   const [input, setInput] = useState("");
   const [products, setProducts] = useState([]);
@@ -1813,7 +1795,7 @@ function App({ session, onLogout }) {
             <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
               Lemoné Blog Studio
               <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.7 · Logowanie Google (lista zaproszonych)
+                v4.8 · Akceptacja autora + Rejestr (bez obiegu akceptacji)
               </span>
             </h1>
             <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
@@ -1823,18 +1805,16 @@ function App({ session, onLogout }) {
                   ? "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"
                   : activeModule === "scenariusz"
                   ? "Scenariusze filmów YouTube prowadzonych przez lekarza: weryfikacja, scenariusz, tekst do promptera"
-                  : activeModule === "akceptacje"
-                    ? "Artykuły wysłane do akceptacji: poprawki, decyzje, historia wersji"
-                    : activeModule === "archiwum"
-                      ? "Wszystkie wygenerowane artykuły: podgląd, edycja HTML, wersje"
+                  : activeModule === "archiwum"
+                      ? "Zaakceptowane artykuły: podgląd, edycja HTML, wersje"
                       : "Lista zaproszonych kont Google i role"}
             </p>
           </div>
           <div style={{ flex: 1 }} />
           {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
           <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
-            {[["format", "Formatowanie"], ["generator", "Artykuł"], ["scenariusz", "Scenariusz"], ["akceptacje", "Akceptacje"], ...(session?.role === "admin" ? [["archiwum", "Rejestr"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
-              <button key={key} onClick={() => { setActiveModule(key); if (key === "akceptacje" && !reviewId) openReview(null); }}
+            {[["format", "Formatowanie"], ["generator", "Artykuł"], ["scenariusz", "Scenariusz"], ...(session?.role === "admin" ? [["archiwum", "Rejestr"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
+              <button key={key} onClick={() => setActiveModule(key)}
                 style={{
                   border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px",
                   fontSize: 12.5, fontWeight: 600, fontFamily: theme.font.heading,
@@ -1869,9 +1849,6 @@ function App({ session, onLogout }) {
         </div>
         {activeModule === "uzytkownicy" && session?.role === "admin" && <AdminUsers />}
         {activeModule === "archiwum" && session?.role === "admin" && <ArchiveModule shared={{ normalizeDashes, buildFaqCmsJson }} />}
-        {activeModule === "akceptacje" && (
-          <Reviews shared={{ normalizeDashes, buildFaqCmsJson }} reviewId={reviewId} onOpen={openReview} />
-        )}
         {activeModule === "format" && step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
         {activeModule === "format" && step === "empty" && <EmptyView onBack={handleReset} />}
         {activeModule === "format" && step === "results" && (
@@ -2102,8 +2079,8 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
             onDownload={downloadFullArticle}
             boxesHtml={allBoxesHtml}
             reviewSlot={(displayHtml) => (
-              <SendForReview payload={{
-                kind: "sklep",
+              <AcceptPanel kind="sklep" payload={{
+                typ: "formatowanie",
                 title: (displayHtml.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i)?.[1] || "").replace(/<[^>]+>/g, "").trim(),
                 html: displayHtml, faqItems,
               }} />
