@@ -1797,7 +1797,7 @@ function App({ session, onLogout }) {
           </h1>
           <div style={{ borderLeft: `1px solid ${theme.color.border}`, paddingLeft: 18, alignSelf: "stretch", display: "flex", flexDirection: "column", justifyContent: "center" }}>
             <span style={{ alignSelf: "flex-start", fontSize: 10, fontWeight: 600, color: theme.color.leaf, background: theme.color.accentSoft, padding: "2px 8px", borderRadius: 99, fontFamily: theme.font.mono }}>
-              v4.10 · Logotyp i oprawa cytrusowa
+              v4.11 · Scenariusze: YouTube, Shorts, rolki, Stories, reklama
             </span>
             <p style={{ fontSize: 12, color: theme.color.textSecondary, margin: "6px 0 0", maxWidth: 420 }}>
               {activeModule === "format"
@@ -1805,7 +1805,7 @@ function App({ session, onLogout }) {
                 : activeModule === "generator"
                   ? "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"
                   : activeModule === "scenariusz"
-                  ? "Scenariusze filmów z lekarzem oraz rolek zespołu i influencerów: scenariusz, tekst do promptera"
+                  ? "Scenariusze wideo dla każdego kanału: YouTube, Shorts, rolki, Stories, reklama, influencerzy"
                   : activeModule === "archiwum"
                       ? "Zaakceptowane artykuły: podgląd, edycja HTML, wersje"
                       : "Lista zaproszonych kont Google i role"}
