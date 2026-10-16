@@ -11,7 +11,7 @@ import { useState, useEffect, useRef } from "react";
 import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
-import { sanitizeHtml, CopyButton } from "./shared.jsx";
+import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
 import { callModel, CostMeter, MODELS, DEFAULT_MODEL, SEARCH_DEPTH, stripFences } from "./generator.jsx";
 import { SCENARIUSZ_PROMPT_DEFAULT, SCENARIUSZ_FIELDS } from "./prompts/scenariusz.js";
 import { ROLKI, rolkaFields } from "./prompts/rolki.js";
@@ -260,7 +260,7 @@ export default function ScenarioModule({ shared, session }) {
       {tab === "nowy" && <NewScenario key={kind} kind={kind} shared={shared} prompt={prompt} author={author} onSaved={(id) => { setOpenId(id); setTab("lista"); }} />}
       {tab === "lista" && (openId
         ? <ScriptEditor id={openId} shared={shared} author={author} onBack={() => setOpenId(null)} />
-        : <ScriptList onOpen={setOpenId} />)}
+        : <ScriptList onOpen={setOpenId} session={session} />)}
       {tab === "prompt" && <PromptEditor key={kind} kind={kind} prompt={prompt} author={author} />}
     </div>
   );
@@ -413,34 +413,42 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
   );
 }
 
-// === Lista scenariuszy (wszystkie rodzaje) ===
-function ScriptList({ onOpen }) {
+// === Lista scenariuszy (wszystkie rodzaje): szukanie, filtr autora i rodzaju, sortowanie, usuwanie ===
+function ScriptList({ onOpen, session }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
   const load = async () => { setError(null); try { setItems((await api("/scripts")).items); } catch (e) { setError(e.message); } };
   useEffect(() => { load(); }, []);
-  const shown = (items || []).filter(it => !filter || (it.kind || "lekarz-yt") === filter);
+  const byKind = (items || []).filter(it => !filter || (it.kind || "lekarz-yt") === filter);
+  const reg = useRegistry(byKind, it => [kindOf(it.kind).label]);
+  // usuwa autor scenariusza albo admin (Worker sprawdza to samo); trafia do kosza
+  const canDelete = (it) => session && (session.role === "admin" || session.email === it.author);
+  const remove = async (id) => {
+    await api(`/scripts/${id}`, { action: "delete" });
+    setItems(prev => prev.filter(x => x.id !== id));
+  };
+  const shown = reg.shown;
   return (
     <div style={ui.card}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: theme.space(2), flexWrap: "wrap" }}>
         <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Scenariusze</h2>
         <div style={{ flex: 1 }} />
-        <KindSelect value={filter} onChange={setFilter} withAll />
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
       </div>
+      <RegistryToolbar reg={reg} placeholder="Szukaj: tytuł, autor, rodzaj">
+        <KindSelect value={filter} onChange={setFilter} withAll />
+      </RegistryToolbar>
       {error && <div style={ui.banner("danger")}>{error}</div>}
       {!items && !error && <p style={ui.help}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> Wczytuję...</p>}
-      {items && shown.length === 0 && <p style={ui.help}>Brak scenariuszy{filter ? " tego rodzaju" : ""}. Wygeneruj pierwszy w zakładce „Nowy scenariusz”.</p>}
+      {items && <p style={{ ...ui.help, marginTop: 0 }}>{shown.length} z {items.length} scenariuszy{reg.filtered || filter ? " (filtr)" : ""}</p>}
+      {items && shown.length === 0 && <p style={ui.help}>{reg.filtered || filter ? "Nic nie pasuje do filtra." : "Brak scenariuszy. Wygeneruj pierwszy w zakładce „Nowy scenariusz”."}</p>}
       {shown.map(it => (
-        <button key={it.id} onClick={() => onOpen(it.id)}
-          style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, width: "100%", textAlign: "left", background: "transparent", border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, padding: "10px 12px", marginBottom: 8, cursor: "pointer", fontFamily: "inherit", color: theme.color.text }}>
-          <div>
-            <div style={{ fontWeight: 600 }}>{it.title || "(bez tematu)"}</div>
-            <div style={{ ...ui.help, margin: "3px 0 0" }}>{kindOf(it.kind).label} · {it.author} · {fmt(it.createdAt)}{it.v > 1 ? ` · wersja ${it.v} (${fmt(it.updatedAt)})` : ""}</div>
-          </div>
-          <div style={{ alignSelf: "center", ...ui.help, margin: 0 }}>{usdFmt(it.usd)} USD</div>
-        </button>
+        <RegistryRow key={it.id} onOpen={() => onOpen(it.id)} onDelete={canDelete(it) ? () => remove(it.id) : null}
+          deleteLabel={it.title || "scenariusz bez tematu"} right={`${usdFmt(it.usd)} USD`}>
+          <div style={{ fontWeight: 600 }}>{it.title || "(bez tematu)"}</div>
+          <div style={{ ...ui.help, margin: "3px 0 0" }}>{kindOf(it.kind).label} · {it.author} · {fmt(it.createdAt)}{it.v > 1 ? ` · wersja ${it.v} (${fmt(it.updatedAt)})` : ""}</div>
+        </RegistryRow>
       ))}
     </div>
   );

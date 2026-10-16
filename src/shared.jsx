@@ -5,7 +5,7 @@
 // Tu też narzędzia używane przez kilka modułów: sanitizacja HTML z bazy, przycisk kopiowania.
 
 import { useState } from "react";
-import { Copy, Check, CheckCircle2, Loader2, AlertCircle, ShieldCheck } from "lucide-react";
+import { Copy, Check, CheckCircle2, Loader2, AlertCircle, ShieldCheck, Trash2 } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch, getSession } from "./auth.jsx";
 
@@ -187,6 +187,74 @@ export function AcceptPanel({ kind = "sklep", payload, profile = theme.profile.s
         title={ready ? "" : "Zaznacz wszystkie punkty checklisty"}>
         {state.status === "saving" ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />} Akceptuję i zapisuję w rejestrze
       </button>
+    </div>
+  );
+}
+
+// === v4.12: wspólne elementy rejestrów (artykuły, scenariusze): szukanie, filtr autora, sortowanie, usuwanie ===
+const pl = (a, b) => String(a || "").localeCompare(String(b || ""), "pl", { sensitivity: "base" });
+export const SORTS = {
+  nowe: ["Najnowsze", (a, b) => String(b.createdAt).localeCompare(String(a.createdAt))],
+  stare: ["Najstarsze", (a, b) => String(a.createdAt).localeCompare(String(b.createdAt))],
+  edycja: ["Ostatnio edytowane", (a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt))],
+  tytul: ["Tytuł A-Z", (a, b) => pl(a.title, b.title)],
+  autor: ["Autor A-Z", (a, b) => pl(a.author, b.author) || String(b.createdAt).localeCompare(String(a.createdAt))],
+  koszt: ["Koszt malejąco", (a, b) => (Number(b.usd) || 0) - (Number(a.usd) || 0)],
+};
+
+// Stan paska rejestru; extra(it) zwraca dodatkowe teksty do wyszukiwania (np. typ, rodzaj)
+export function useRegistry(items, extra = () => []) {
+  const [q, setQ] = useState("");
+  const [author, setAuthor] = useState("");
+  const [sort, setSort] = useState("nowe");
+  const list = items || [];
+  const authors = [...new Set(list.map(it => it.author).filter(Boolean))].sort(pl);
+  const needle = q.trim().toLowerCase();
+  const shown = list
+    .filter(it => !author || it.author === author)
+    .filter(it => !needle || [it.title, it.author, ...extra(it)].some(v => String(v || "").toLowerCase().includes(needle)))
+    .sort(SORTS[sort][1]);
+  return { q, setQ, author, setAuthor, sort, setSort, authors, shown, filtered: !!(needle || author) };
+}
+
+export function RegistryToolbar({ reg, placeholder = "Szukaj po tytule lub autorze", children }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: theme.space(1.5) }}>
+      <input value={reg.q} onChange={e => reg.setQ(e.target.value)} style={{ ...ui.input, flex: "1 1 220px", width: "auto" }} placeholder={placeholder} aria-label="Szukaj" />
+      <select value={reg.author} onChange={e => reg.setAuthor(e.target.value)} style={{ ...ui.input, width: "auto", maxWidth: 260 }} aria-label="Autor">
+        <option value="">Wszyscy autorzy</option>
+        {reg.authors.map(a => <option key={a} value={a}>{a}</option>)}
+      </select>
+      {children}
+      <select value={reg.sort} onChange={e => reg.setSort(e.target.value)} style={{ ...ui.input, width: "auto" }} aria-label="Sortowanie">
+        {Object.entries(SORTS).map(([k, [label]]) => <option key={k} value={k}>Sortuj: {label}</option>)}
+      </select>
+      {reg.filtered && <button onClick={() => { reg.setQ(""); reg.setAuthor(""); }} style={ui.btnSecondary}>Wyczyść filtr</button>}
+    </div>
+  );
+}
+
+// Wiersz rejestru: klik otwiera, kosz (jeśli onDelete) usuwa po potwierdzeniu
+export function RegistryRow({ onOpen, onDelete, deleteLabel, right, children }) {
+  const [busy, setBusy] = useState(false);
+  const del = async (e) => {
+    e.stopPropagation();
+    if (!window.confirm(`Usunąć „${deleteLabel || "pozycję"}”? Pozycja zniknie z rejestru (admin może ją odzyskać z kosza).`)) return;
+    setBusy(true);
+    try { await onDelete(); } catch (err) { window.alert(`Nie usunięto: ${err.message}`); setBusy(false); }
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "stretch", border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, marginBottom: 8, opacity: busy ? 0.5 : 1 }}>
+      <button onClick={onOpen} style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr auto", gap: 6, textAlign: "left", background: "transparent", border: "none", padding: "10px 12px", cursor: "pointer", fontFamily: "inherit", color: theme.color.text, minWidth: 0 }}>
+        <div style={{ minWidth: 0 }}>{children}</div>
+        <div style={{ alignSelf: "center", ...ui.help, margin: 0 }}>{right}</div>
+      </button>
+      {onDelete && (
+        <button onClick={del} disabled={busy} title="Usuń" aria-label="Usuń"
+          style={{ border: "none", borderLeft: `1px solid ${theme.color.border}`, background: "transparent", padding: "0 12px", cursor: busy ? "wait" : "pointer", color: theme.color.textMuted, borderRadius: `0 ${theme.radius.control}px ${theme.radius.control}px 0` }}>
+          {busy ? <Loader2 size={14} className="spin" /> : <Trash2 size={14} />}
+        </button>
+      )}
     </div>
   );
 }
