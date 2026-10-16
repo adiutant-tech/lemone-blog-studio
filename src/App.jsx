@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { Copy, Check, FileText, Sparkles, AlertCircle, Loader2, RefreshCw, ChevronDown, ChevronRight, Package, Zap, Download, Plus, X } from "lucide-react";
+import { Copy, Check, FileText, AlertCircle, Loader2, RefreshCw, ChevronDown, ChevronRight, Package, Zap, Download, Plus, X } from "lucide-react";
 // v4.0: moduł Generator (osobny plik) + design system (specyfikacja v4.0-v2, sekcja 9).
 // Funkcje wspólne idą do Generatora PRZEZ PROPS (bez eksportów nazwanych i bez cyklu importów).
 import Generator from "./generator.jsx";
@@ -12,6 +12,7 @@ import ArchiveModule from "./archive.jsx";
 // v4.6: scenariusze filmów YouTube (prompt matka z historią wersji)
 import ScenarioModule from "./scenario.jsx";
 import theme from "./theme.js";
+import { LemoneLogo, CitrusDecor, citrusBar } from "./logo.jsx";
 
 // === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) - REVERTED z 1149 do oryginału ===
 // 2026-10-16 (SLP-337, kontrola blog_studio_kategorie_kontrola_v1.csv + stan na żywo): 130 wpisów.
@@ -1786,25 +1787,25 @@ function App({ session, onLogout }) {
         .scroll-thin::-webkit-scrollbar-track { background: transparent; }
       `}</style>
 
-      <header style={{ borderBottom: "1px solid #e8e4dc", background: "#fff" }}>
-        <div style={{ maxWidth: 1200, margin: "0 auto", padding: "26px 24px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-          <div style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #d4e4a8, #2d4a2d)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Sparkles size={18} color="#faf8f4" />
-          </div>
-          <div>
-            <h1 className="display-font" style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", margin: 0 }}>
-              Lemoné Blog Studio
-              <span style={{ fontSize: 10, fontWeight: 500, color: "#7d7d6d", background: "#eef2e8", padding: "2px 7px", borderRadius: 99, marginLeft: 10, verticalAlign: "middle", fontFamily: "ui-monospace, monospace" }}>
-                v4.9 · Scenariusze: rolki zespołu i influencerów
-              </span>
-            </h1>
-            <p style={{ fontSize: 12, color: "#6b6b5b", margin: "2px 0 0" }}>
+      {/* v4.10: nagłówek w barwach cytrusów (znak marki, poświata, plastry w tle, pasek u dołu) */}
+      <header style={{ position: "relative", overflow: "hidden", background: `linear-gradient(180deg, ${theme.color.surface} 0%, ${theme.color.citrusWash} 100%)` }}>
+        <CitrusDecor size={260} opacity={0.13} style={{ right: -70, top: -110 }} />
+        <CitrusDecor size={120} opacity={0.1} style={{ right: 210, bottom: -78 }} />
+        <div style={{ position: "relative", maxWidth: 1200, margin: "0 auto", padding: "22px 24px 20px", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+          <h1 className="display-font" style={{ margin: 0 }}>
+            <LemoneLogo size={50} />
+          </h1>
+          <div style={{ borderLeft: `1px solid ${theme.color.border}`, paddingLeft: 18, alignSelf: "stretch", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <span style={{ alignSelf: "flex-start", fontSize: 10, fontWeight: 600, color: theme.color.leaf, background: theme.color.accentSoft, padding: "2px 8px", borderRadius: 99, fontFamily: theme.font.mono }}>
+              v4.10 · Logotyp i oprawa cytrusowa
+            </span>
+            <p style={{ fontSize: 12, color: theme.color.textSecondary, margin: "6px 0 0", maxWidth: 420 }}>
               {activeModule === "format"
                 ? `Wklej artykuł - dostaniesz boxy produktowe z powiązaniami z bazy ${CATEGORIES.length} kategorii`
                 : activeModule === "generator"
                   ? "Generacja artykułów z promptów: konspekt, sekcje, redakcja anti-slop, pipeline formatowania"
                   : activeModule === "scenariusz"
-                  ? "Scenariusze filmów YouTube prowadzonych przez lekarza: weryfikacja, scenariusz, tekst do promptera"
+                  ? "Scenariusze filmów z lekarzem oraz rolek zespołu i influencerów: scenariusz, tekst do promptera"
                   : activeModule === "archiwum"
                       ? "Zaakceptowane artykuły: podgląd, edycja HTML, wersje"
                       : "Lista zaproszonych kont Google i role"}
@@ -1812,7 +1813,7 @@ function App({ session, onLogout }) {
           </div>
           <div style={{ flex: 1 }} />
           {/* v4.0: przełącznik modułów (wspólny header, specyfikacja 9.4) */}
-          <div style={{ display: "flex", background: "#f1efe9", borderRadius: 10, padding: 3, gap: 3 }}>
+          <div style={{ display: "flex", background: theme.color.surface, border: `1px solid ${theme.color.border}`, boxShadow: theme.shadow.card, borderRadius: 12, padding: 4, gap: 3 }}>
             {[["format", "Formatowanie"], ["generator", "Artykuł"], ["scenariusz", "Scenariusz"], ...(session?.role === "admin" ? [["archiwum", "Rejestr"], ["uzytkownicy", "Użytkownicy"]] : [])].map(([key, label]) => (
               <button key={key} onClick={() => setActiveModule(key)}
                 style={{
@@ -1832,6 +1833,7 @@ function App({ session, onLogout }) {
             </button>
           )}
         </div>
+        <div style={{ height: 4, background: citrusBar }} />
       </header>
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px 80px" }}>
