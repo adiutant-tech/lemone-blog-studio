@@ -8,7 +8,7 @@ import { useState, useEffect, useRef } from "react";
 import { Archive as ArchiveIcon, ArrowLeft, Loader2, AlertCircle, RefreshCw, Save, Download, Code2, Eye } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
-import { sanitizeHtml, CopyButton } from "./shared.jsx";
+import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 const TYP_LABEL = { edukacyjny: "Edukacyjny", lifestylowy: "Lifestylowy", ranking: "Ranking (szkic)", klinika: "Klinika", formatowanie: "Formatowanie" };
@@ -34,7 +34,7 @@ export default function ArchiveModule({ shared }) {
 function ArticleList({ onOpen }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
-  const [q, setQ] = useState("");
+  const reg = useRegistry(items, it => [TYP_LABEL[it.typ] || it.typ, it.acceptedBy]);
 
   const load = async () => {
     setError(null);
@@ -42,9 +42,13 @@ function ArticleList({ onOpen }) {
   };
   useEffect(() => { load(); }, []);
 
-  const needle = q.trim().toLowerCase();
-  const shown = (items || []).filter(it => !needle ||
-    [it.title, it.author, TYP_LABEL[it.typ] || it.typ].some(v => (v || "").toLowerCase().includes(needle)));
+  // usunięcie do kosza; z listy znika od razu (lista KV odświeża się z opóźnieniem)
+  const remove = async (id) => {
+    await api(`/articles/${id}`, { action: "delete" });
+    setItems(prev => prev.filter(x => x.id !== id));
+  };
+
+  const shown = reg.shown;
   const total = shown.reduce((s, it) => s + (Number(it.usd) || 0), 0);
 
   return (
@@ -53,28 +57,24 @@ function ArticleList({ onOpen }) {
         <ArchiveIcon size={16} color={theme.color.accentHover} />
         <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Rejestr artykułów</h2>
         <div style={{ flex: 1 }} />
-        <input value={q} onChange={e => setQ(e.target.value)} style={{ ...ui.input, width: 240 }} placeholder="Szukaj: tytuł, autor, typ" />
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
       </div>
+      <RegistryToolbar reg={reg} placeholder="Szukaj: tytuł, autor, typ" />
       {error && <div style={ui.banner("danger")}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
       {!items && !error && <p style={ui.help}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> Wczytuję...</p>}
       {items && (
         <p style={{ ...ui.help, marginTop: 0 }}>
-          {shown.length} artykułów{needle ? " (filtr)" : ""} · łączny koszt generacji: {usd(total)} USD
+          {shown.length} z {items.length} artykułów{reg.filtered ? " (filtr)" : ""} · łączny koszt generacji: {usd(total)} USD
         </p>
       )}
-      {items && shown.length === 0 && <p style={ui.help}>Brak artykułów. Rejestr wypełnia się automatycznie po każdej generacji.</p>}
+      {items && shown.length === 0 && <p style={ui.help}>{reg.filtered ? "Nic nie pasuje do filtra." : "Brak artykułów. Rejestr wypełnia się po akceptacji artykułu."}</p>}
       {shown.map(it => (
-        <button key={it.id} onClick={() => onOpen(it.id)}
-          style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, width: "100%", textAlign: "left", background: "transparent", border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, padding: "10px 12px", marginBottom: 8, cursor: "pointer", fontFamily: "inherit", color: theme.color.text }}>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: theme.size.body }}>{it.title || "(bez tytułu)"}</div>
-            <div style={{ ...ui.help, margin: "3px 0 0" }}>
-              {TYP_LABEL[it.typ] || it.typ} · {it.author} · {fmt(it.createdAt)}{it.accepted ? ` · zaakceptował(a): ${it.acceptedBy}` : " · bez akceptacji"}{it.v > 1 ? ` · wersja ${it.v} (edytowany ${fmt(it.updatedAt)})` : ""}
-            </div>
+        <RegistryRow key={it.id} onOpen={() => onOpen(it.id)} onDelete={() => remove(it.id)} deleteLabel={it.title || "artykuł bez tytułu"} right={`${usd(it.usd)} USD`}>
+          <div style={{ fontWeight: 600, fontSize: theme.size.body }}>{it.title || "(bez tytułu)"}</div>
+          <div style={{ ...ui.help, margin: "3px 0 0" }}>
+            {TYP_LABEL[it.typ] || it.typ} · {it.author} · {fmt(it.createdAt)}{it.accepted ? ` · zaakceptował(a): ${it.acceptedBy}` : " · bez akceptacji"}{it.v > 1 ? ` · wersja ${it.v} (edytowany ${fmt(it.updatedAt)})` : ""}
           </div>
-          <div style={{ alignSelf: "center", ...ui.help, margin: 0 }}>{usd(it.usd)} USD</div>
-        </button>
+        </RegistryRow>
       ))}
     </div>
   );

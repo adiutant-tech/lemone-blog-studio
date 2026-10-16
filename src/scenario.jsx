@@ -1,6 +1,7 @@
-// === Lemoné Blog Studio v4.9 - moduł Scenariusz (filmy z lekarzem, rolki zespołu i influencerów) ===
-// Rodzaje: film YouTube z lekarzem (format długi) oraz rolki sklepu, kliniki i influencerów
-// (format krótki, pion 9:16). Każdy rodzaj ma własny prompt matkę z historią wersji widoczną
+// === Lemoné Blog Studio v4.11 - moduł Scenariusz (wszystkie formaty wideo) ===
+// Rodzaje pogrupowane według kanału: YouTube (filmy długie 16:9), YouTube Shorts, rolki Instagram
+// i TikTok, Stories, reklama wideo, współprace z influencerami. Format (long, short, shorts,
+// stories, ad) wyznacza sekcje wyniku i tabelę scenariusza. Każdy rodzaj ma własny prompt matkę z historią wersji widoczną
 // dla wszystkich (Worker /prompts/<nazwa>; domyślne w src/prompts/).
 // Generacja w częściach (pełny scenariusz z tabelą nie mieści się w jednej odpowiedzi).
 // Tekst do promptera/lektora składamy z kolumny wypowiedzi tabeli scenariusza: zawsze zgodny,
@@ -10,10 +11,11 @@ import { useState, useEffect, useRef } from "react";
 import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
-import { sanitizeHtml, CopyButton } from "./shared.jsx";
+import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
 import { callModel, CostMeter, MODELS, DEFAULT_MODEL, SEARCH_DEPTH, stripFences } from "./generator.jsx";
 import { SCENARIUSZ_PROMPT_DEFAULT, SCENARIUSZ_FIELDS } from "./prompts/scenariusz.js";
 import { ROLKI, rolkaFields } from "./prompts/rolki.js";
+import { FORMATY, formatFields } from "./prompts/formaty.js";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" }) : "";
@@ -40,15 +42,64 @@ const FORMATS = {
     table: "C", prompter: "D",
     tableHead: "<th>Czas</th><th>Tekst mówiony lub lektor</th><th>Ujęcie i obraz</th><th>Napis na ekranie</th>",
   },
+  shorts: {
+    data: "DANE DO SHORTA",
+    sections: {
+      A: "A. BRIEF", B: "B. TRZY WARIANTY HOOKA", C: "C. SCENARIUSZ", D: "D. TEKST DO PROMPTERA LUB LEKTORA",
+      E: "E. TYTUŁ, OPIS I POWIĄZANY FILM", F: "F. KONTROLA ZGODNOŚCI", G: "G. PLAN OCENY",
+    },
+    table: "C", prompter: "D",
+    tableHead: "<th>Czas</th><th>Tekst mówiony lub lektor</th><th>Ujęcie i obraz</th><th>Napis na ekranie</th>",
+  },
+  stories: {
+    data: "DANE DO STORIES",
+    sections: {
+      A: "A. BRIEF", B: "B. TRZY POMYSŁY NA PIERWSZĄ PLANSZĘ", C: "C. SEKWENCJA PLANSZ", D: "D. TEKST DO NAGRANIA",
+      E: "E. NAKLEJKI, LINK I WYRÓŻNIONE", F: "F. KONTROLA ZGODNOŚCI", G: "G. PLAN OCENY",
+    },
+    table: "C", prompter: "D",
+    tableHead: "<th>Plansza i czas</th><th>Tekst mówiony lub lektor</th><th>Obraz</th><th>Napis i naklejka</th>",
+  },
+  ad: {
+    data: "DANE DO REKLAMY",
+    sections: {
+      A: "A. BRIEF KAMPANII", B: "B. TRZY HOOKI DO TESTU A/B", C: "C. SCENARIUSZ", D: "D. TEKST LEKTORA",
+      E: "E. TEKSTY REKLAMY I WERSJE FORMATÓW", F: "F. KONTROLA ZGODNOŚCI I ZASAD PLATFORM", G: "G. PLAN TESTU",
+    },
+    table: "C", prompter: "D",
+    tableHead: "<th>Czas</th><th>Tekst lektora</th><th>Ujęcie i obraz</th><th>Napis na ekranie</th>",
+  },
+};
+const isLong = (format) => format === "long";
+
+// Kanały (kolejność w liście rodzajów)
+const GROUPS = {
+  youtube: "YouTube: filmy długie 16:9",
+  shorts: "YouTube Shorts 9:16",
+  rolki: "Rolki Instagram i TikTok 9:16",
+  stories: "Stories Instagram i Facebook",
+  reklama: "Reklama wideo (kampanie płatne)",
+  influencer: "Współprace z influencerami",
 };
 
-const GROUPS = { klinika: "Klinika", sklep: "Sklep", influencer: "Influencerzy" };
+const ROLKA_SPEC = { proporcje: "9:16", dlugosc: "30-45 s", platformy: "Instagram Reels, TikTok, YouTube Shorts" };
 
 export const KINDS = {
-  "lekarz-yt": { label: "Film YouTube z lekarzem", cel: "klinika", group: "klinika", format: "long", promptName: "scenariusz", defaultPrompt: SCENARIUSZ_PROMPT_DEFAULT, fields: SCENARIUSZ_FIELDS, webSearch: true },
+  "lekarz-yt": {
+    label: "Klinika: film edukacyjny z lekarzem", cel: "klinika", group: "youtube", format: "long", promptName: "scenariusz",
+    defaultPrompt: SCENARIUSZ_PROMPT_DEFAULT, fields: SCENARIUSZ_FIELDS, webSearch: true, source: "src/prompts/scenariusz.js",
+    opis: "Lekarz odpowiada na jedno pytanie widza: rzetelna edukacja zdrowotna z weryfikacją w źródłach, tytułami, miniaturami i tekstem do promptera.",
+    spec: { proporcje: "16:9", dlugosc: "8-15 min", platformy: "YouTube" },
+  },
+  ...Object.fromEntries(Object.entries(FORMATY).map(([k, v]) => [k, {
+    ...v, promptName: k, defaultPrompt: v.prompt, fields: formatFields(k), webSearch: !!v.webSearch, source: "src/prompts/formaty.js",
+  }])),
   ...Object.fromEntries(Object.entries(ROLKI).map(([k, v]) => [k, {
-    label: v.label, cel: v.cel, group: v.group || v.cel, format: "short", promptName: k, defaultPrompt: v.prompt, fields: rolkaFields(k),
-    webSearch: !!v.webSearch,
+    label: v.label, cel: v.cel, group: v.group || "rolki", format: "short", promptName: k, defaultPrompt: v.prompt, fields: rolkaFields(k),
+    webSearch: !!v.webSearch, source: "src/prompts/rolki.js", spec: ROLKA_SPEC,
+    opis: v.group === "influencer"
+      ? "Brief dla twórcy i propozycja scenariusza rolki na jego profilu: przekazy obowiązkowe, zakazy, oznaczenie współpracy."
+      : "Rolka pionowa nagrywana telefonem przez zespół: hook w pierwszych sekundach, jeden przekaz, napisy na każdej scenie.",
   }])),
 };
 const kindOf = (k) => KINDS[k] || KINDS["lekarz-yt"];
@@ -209,7 +260,7 @@ export default function ScenarioModule({ shared, session }) {
       {tab === "nowy" && <NewScenario key={kind} kind={kind} shared={shared} prompt={prompt} author={author} onSaved={(id) => { setOpenId(id); setTab("lista"); }} />}
       {tab === "lista" && (openId
         ? <ScriptEditor id={openId} shared={shared} author={author} onBack={() => setOpenId(null)} />
-        : <ScriptList onOpen={setOpenId} />)}
+        : <ScriptList onOpen={setOpenId} session={session} />)}
       {tab === "prompt" && <PromptEditor key={kind} kind={kind} prompt={prompt} author={author} />}
     </div>
   );
@@ -223,7 +274,7 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
   const [inputs, setInputs] = useState({});
   const [model, setModel] = useState(() => { const m = lsGet("lemone_scen_model", DEFAULT_MODEL); return MODELS[m] ? m : DEFAULT_MODEL; });
   const [webSearch, setWebSearch] = useState(K.webSearch);
-  const [depth, setDepth] = useState(K.format === "short" ? "szybkie" : "standard");
+  const [depth, setDepth] = useState(isLong(K.format) ? "standard" : "szybkie");
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState(null);
   const [error, setError] = useState(null);
@@ -250,7 +301,7 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
         if (webSearch) {
           setStep("Weryfikacja w źródłach (web search)...");
           p.research = await callModel(
-            `${base}\n\nCZĘŚĆ 1: tylko weryfikacja. Sprawdź w aktualnych, wiarygodnych źródłach kluczowe fakty potrzebne do tego materiału${K.format === "long" ? " (krok 1 promptu: SPRAWDŹ PODSTAWY)" : ""}. Zwróć zwięzłą notatkę (maks. ok. ${K.format === "long" ? 800 : 400} słów, zwykły tekst w punktach): datę weryfikacji, ustalenia z URL źródła w nawiasie przy każdym punkcie. Bez scenariusza.`,
+            `${base}\n\nCZĘŚĆ 1: tylko weryfikacja. Sprawdź w aktualnych, wiarygodnych źródłach kluczowe fakty potrzebne do tego materiału${K.promptName === "scenariusz" ? " (krok 1 promptu: SPRAWDŹ PODSTAWY)" : ""}. Zwróć zwięzłą notatkę (maks. ok. ${isLong(K.format) ? 800 : 400} słów, zwykły tekst w punktach): datę weryfikacji, ustalenia z URL źródła w nawiasie przy każdym punkcie. Bez scenariusza.`,
             opts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[depth].uses, stage: "weryfikacja" }));
         } else {
           p.research = null;
@@ -261,14 +312,14 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
         : "\n\nBEZ WERYFIKACJI ONLINE: nie wymyślaj źródeł, statystyk ani badań; fakty tylko z danych i materiałów.";
       const ctx = base + research;
 
-      if (K.format === "long") {
+      if (isLong(K.format)) {
         if (!p.plan) {
           setStep("Plan filmu, tytuły i otwarcia (A-C)...");
           p.plan = norm(await callModel({ cached: ctx, text: `CZĘŚĆ 2 z 4: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}).` }, opts({ maxTokens: 16000, effort: "medium", stage: "plan" })));
         }
         if (!p.script) {
           setStep("Pełny scenariusz (D)...");
-          p.script = norm(await callModel({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nCZĘŚĆ 3 z 4: zwróć wyłącznie sekcję D: <h2>${S.D}</h2> i jedną tabelę <table> z wierszem nagłówka ${F.tableHead}. Zrealizuj otwarcie wybrane w C i długość z briefu.` }, opts({ maxTokens: 16000, effort: "medium", stage: "scenariusz" })));
+          p.script = norm(await callModel({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nCZĘŚĆ 3 z 4: zwróć wyłącznie sekcję D: <h2>${S.D}</h2> i jedną tabelę <table> z wierszem nagłówka ${K.tableHead || F.tableHead}. Zrealizuj otwarcie wybrane w C i długość z briefu.` }, opts({ maxTokens: 16000, effort: "medium", stage: "scenariusz" })));
         }
         if (!p.pack) {
           setStep("Pakiet publikacyjny, kontrola jakości, plan oceny (F-H)...");
@@ -276,12 +327,12 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
         }
       } else {
         if (!p.script) {
-          setStep("Brief, hooki i scenariusz rolki (A-C)...");
+          setStep(`Brief, warianty otwarcia i scenariusz (A-C)...`);
           p.plan = "";
-          p.script = norm(await callModel({ cached: ctx, text: `CZĘŚĆ 2 z 3: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). Sekcja C to jedna tabela <table> z wierszem nagłówka ${F.tableHead}.` }, opts({ maxTokens: 16000, effort: "medium", stage: "scenariusz" })));
+          p.script = norm(await callModel({ cached: ctx, text: `CZĘŚĆ 2 z 3: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). Sekcja C to jedna tabela <table> z wierszem nagłówka ${K.tableHead || F.tableHead}.` }, opts({ maxTokens: 16000, effort: "medium", stage: "scenariusz" })));
         }
         if (!p.pack) {
-          setStep("Opis, hashtagi, kontrola zgodności, plan oceny (E-G)...");
+          setStep(`Publikacja, kontrola zgodności i plan oceny (E-G)...`);
           p.pack = norm(await callModel({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.script}\n\nCZĘŚĆ 3 z 3: zwróć wyłącznie sekcje E, F i G (${S.E}, ${S.F}, ${S.G}). W F sprawdź rzeczywisty scenariusz z sekcji C.` }, opts({ maxTokens: 16000, effort: "low", stage: "pakiet" })));
         }
       }
@@ -311,8 +362,17 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
   return (
     <div style={ui.card}>
       <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 4px", fontFamily: theme.font.heading }}>{K.label}</h2>
+      <p style={{ fontSize: theme.size.body, color: theme.color.textSecondary, margin: "0 0 8px", maxWidth: 760 }}>{K.opis}</p>
+      {K.spec && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          <span style={ui.pill(P.soft, theme.color.text)}>{GROUPS[K.group]}</span>
+          <span style={ui.pill(theme.color.bg, theme.color.text)}>Proporcje: {K.spec.proporcje}</span>
+          <span style={ui.pill(theme.color.bg, theme.color.text)}>Długość: {K.spec.dlugosc}</span>
+          <span style={ui.pill(theme.color.bg, theme.color.text)}>Gdzie: {K.spec.platformy}</span>
+        </div>
+      )}
       <p style={{ ...ui.help, marginTop: 0 }}>
-        {K.format === "short" ? "Rolka pionowa 9:16. " : ""}Pola z promptu matki tego rodzaju; wymagane oznaczono gwiazdką, reszta ma wartości domyślne.
+        Wynik: {Object.values(F.sections).map(x => x.replace(/^[A-H]\. /, "").toLowerCase()).join(", ")}. Pola wymagane oznaczono gwiazdką, reszta ma wartości domyślne.
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: theme.space(2) }}>
         {K.fields.map(f => (
@@ -348,39 +408,47 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
       {step && <p style={{ ...ui.help, color: theme.color.text }}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> {step}</p>}
       {error && <div style={{ ...ui.banner("danger"), marginTop: 10 }}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
       <CostMeter costs={costs} />
-      <p style={ui.help}>{K.format === "short" ? "Rolka powstaje w 1-2 minuty." : "Film powstaje w kilka minut (4 części)."} Scenariusz zapisuje się automatycznie i otwiera do edycji.</p>
+      <p style={ui.help}>{isLong(K.format) ? "Film powstaje w kilka minut (4 części)." : "Scenariusz powstaje w 1-2 minuty."} Scenariusz zapisuje się automatycznie i otwiera do edycji.</p>
     </div>
   );
 }
 
-// === Lista scenariuszy (wszystkie rodzaje) ===
-function ScriptList({ onOpen }) {
+// === Lista scenariuszy (wszystkie rodzaje): szukanie, filtr autora i rodzaju, sortowanie, usuwanie ===
+function ScriptList({ onOpen, session }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
   const load = async () => { setError(null); try { setItems((await api("/scripts")).items); } catch (e) { setError(e.message); } };
   useEffect(() => { load(); }, []);
-  const shown = (items || []).filter(it => !filter || (it.kind || "lekarz-yt") === filter);
+  const byKind = (items || []).filter(it => !filter || (it.kind || "lekarz-yt") === filter);
+  const reg = useRegistry(byKind, it => [kindOf(it.kind).label]);
+  // usuwa autor scenariusza albo admin (Worker sprawdza to samo); trafia do kosza
+  const canDelete = (it) => session && (session.role === "admin" || session.email === it.author);
+  const remove = async (id) => {
+    await api(`/scripts/${id}`, { action: "delete" });
+    setItems(prev => prev.filter(x => x.id !== id));
+  };
+  const shown = reg.shown;
   return (
     <div style={ui.card}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: theme.space(2), flexWrap: "wrap" }}>
         <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Scenariusze</h2>
         <div style={{ flex: 1 }} />
-        <KindSelect value={filter} onChange={setFilter} withAll />
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
       </div>
+      <RegistryToolbar reg={reg} placeholder="Szukaj: tytuł, autor, rodzaj">
+        <KindSelect value={filter} onChange={setFilter} withAll />
+      </RegistryToolbar>
       {error && <div style={ui.banner("danger")}>{error}</div>}
       {!items && !error && <p style={ui.help}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> Wczytuję...</p>}
-      {items && shown.length === 0 && <p style={ui.help}>Brak scenariuszy{filter ? " tego rodzaju" : ""}. Wygeneruj pierwszy w zakładce „Nowy scenariusz”.</p>}
+      {items && <p style={{ ...ui.help, marginTop: 0 }}>{shown.length} z {items.length} scenariuszy{reg.filtered || filter ? " (filtr)" : ""}</p>}
+      {items && shown.length === 0 && <p style={ui.help}>{reg.filtered || filter ? "Nic nie pasuje do filtra." : "Brak scenariuszy. Wygeneruj pierwszy w zakładce „Nowy scenariusz”."}</p>}
       {shown.map(it => (
-        <button key={it.id} onClick={() => onOpen(it.id)}
-          style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, width: "100%", textAlign: "left", background: "transparent", border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, padding: "10px 12px", marginBottom: 8, cursor: "pointer", fontFamily: "inherit", color: theme.color.text }}>
-          <div>
-            <div style={{ fontWeight: 600 }}>{it.title || "(bez tematu)"}</div>
-            <div style={{ ...ui.help, margin: "3px 0 0" }}>{kindOf(it.kind).label} · {it.author} · {fmt(it.createdAt)}{it.v > 1 ? ` · wersja ${it.v} (${fmt(it.updatedAt)})` : ""}</div>
-          </div>
-          <div style={{ alignSelf: "center", ...ui.help, margin: 0 }}>{usdFmt(it.usd)} USD</div>
-        </button>
+        <RegistryRow key={it.id} onOpen={() => onOpen(it.id)} onDelete={canDelete(it) ? () => remove(it.id) : null}
+          deleteLabel={it.title || "scenariusz bez tematu"} right={`${usdFmt(it.usd)} USD`}>
+          <div style={{ fontWeight: 600 }}>{it.title || "(bez tematu)"}</div>
+          <div style={{ ...ui.help, margin: "3px 0 0" }}>{kindOf(it.kind).label} · {it.author} · {fmt(it.createdAt)}{it.v > 1 ? ` · wersja ${it.v} (${fmt(it.updatedAt)})` : ""}</div>
+        </RegistryRow>
       ))}
     </div>
   );
@@ -444,7 +512,7 @@ function ScriptEditor({ id, shared, author, onBack }) {
         </p>
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <CopyButton text={prompterText(shown.html, K.format)} label={K.format === "short" ? "Kopiuj tekst do promptera / lektora" : "Kopiuj tekst do promptera"} primary profile={P} />
+        <CopyButton text={prompterText(shown.html, K.format)} label={`Kopiuj: ${F.sections[F.prompter].replace(/^[A-H]\. /, "").toLowerCase()}`} primary profile={P} />
         <CopyButton text={shown.html} label="Kopiuj całość (HTML)" />
         <button onClick={download} style={ui.btnSecondary}><Download size={13} /> Pobierz .html</button>
         <div style={{ flex: 1 }} />
@@ -546,7 +614,7 @@ function PromptEditor({ kind, prompt, author }) {
         ))}
         <div style={{ borderTop: `1px solid ${theme.color.border}`, padding: "8px 0" }}>
           <div style={{ fontSize: theme.size.small + 1 }}><strong>Wersja domyślna</strong>{!prompt.current ? " · bieżąca" : ""}</div>
-          <div style={ui.help}>z aplikacji ({K.format === "short" ? "src/prompts/rolki.js" : "src/prompts/scenariusz.js"})</div>
+          <div style={ui.help}>z aplikacji ({K.source})</div>
           {prompt.current && <button onClick={() => { setText(prompt.defaultText); setNote("Przywrócenie wersji domyślnej"); }} style={{ ...ui.btnSecondary, padding: "3px 8px", fontSize: theme.size.small, marginTop: 4 }}><RotateCcw size={11} /> Przywróć do edycji</button>}
         </div>
       </div>

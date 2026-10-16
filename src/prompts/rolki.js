@@ -76,7 +76,7 @@ const INFLUENCER_OUTPUT = ROLKA_OUTPUT.replace(
 const DANE = (lines) => `DANE DO ROLKI\n${lines.map(l => `• ${l}: [wpisz]`).join("\n")}`;
 const daneDla = (kind) => DANE(rolkaFields(kind).map(f => f.label.replace(/ \(opcjonalnie\)$/, "")));
 
-const SKLEP_ZGODNOSC = `2. ZGODNOŚĆ (sklep kosmetyczny)
+export const SKLEP_ZGODNOSC = `2. ZGODNOŚĆ (sklep kosmetyczny)
 
 - Kosmetyk pielęgnuje, wspiera, poprawia wygląd; nigdy nie leczy i nie usuwa chorób (prawo kosmetyczne).
 - Suplementy: tylko dozwolone oświadczenia zdrowotne, bez obietnic leczenia.
@@ -85,7 +85,7 @@ const SKLEP_ZGODNOSC = `2. ZGODNOŚĆ (sklep kosmetyczny)
 - Bez porównań dyskredytujących inne marki.
 - Płatna współpraca lub materiał reklamowy: wyraźne oznaczenie (np. #reklama, #współpraca).`;
 
-const KLINIKA_ZGODNOSC = `2. ZGODNOŚĆ (klinika medycyny estetycznej)
+export const KLINIKA_ZGODNOSC = `2. ZGODNOŚĆ (klinika medycyny estetycznej)
 
 - Informacje o świadczeniach podawaj w formie informacyjnej. Treść nie może mieć cech niedozwolonej reklamy świadczeń zdrowotnych: bez zachęcania promocjami cenowymi, bez obietnic efektów, bez porównań z innymi placówkami.
 - Kwalifikacja do zabiegu zawsze na konsultacji; wspominaj o przeciwwskazaniach i o tym, że efekty są indywidualne.
@@ -106,51 +106,51 @@ const zloz = (kind, head, opis, zgodnosc, output = ROLKA_OUTPUT, extra = "") =>
 
 export const ROLKI = {
   "rolka-sklep-lifestyle": {
-    label: "Rolka sklepu: lifestyle", cel: "sklep",
+    label: "Sklep: lifestyle", cel: "sklep", group: "rolki",
     prompt: zloz("rolka-sklep-lifestyle", SKLEP_HEAD, `Przygotuj kompletny scenariusz rolki lifestylowej nagrywanej przez zespół sklepu.
 
 Rolka lifestylowa pokazuje pielęgnację w codziennych sytuacjach: rytuał poranny lub wieczorny, zmiana pory roku, podróż, praca, sport. Ma inspirować i dawać jedną konkretną wskazówkę. Produkty mogą się pojawić naturalnie, jako część rytuału, ale rolka nie jest reklamą produktu.`, SKLEP_ZGODNOSC),
   },
   "rolka-sklep-produkt": {
-    label: "Rolka sklepu: produkt", cel: "sklep",
+    label: "Sklep: produkt", cel: "sklep", group: "rolki",
     prompt: zloz("rolka-sklep-produkt", SKLEP_HEAD, `Przygotuj kompletny scenariusz rolki produktowej nagrywanej przez zespół sklepu.
 
 Rolka produktowa pokazuje jeden produkt albo zestaw: dla kogo jest, jaki problem pielęgnacyjny rozwiązuje, jak go używać, jak wygląda tekstura i aplikacja. Konkret i uczciwość zamiast superlatyw. Fakty wyłącznie z karty produktu, linku do produktu lub notatek.`, SKLEP_ZGODNOSC),
   },
   "rolka-sklep-tutorial": {
-    label: "Rolka sklepu: tutorial lub rytuał krok po kroku", cel: "sklep",
+    label: "Sklep: tutorial lub rytuał krok po kroku", cel: "sklep", group: "rolki",
     prompt: zloz("rolka-sklep-tutorial", SKLEP_HEAD, `Przygotuj kompletny scenariusz rolki instruktażowej nagrywanej przez zespół sklepu.
 
 Tutorial pokazuje rytuał krok po kroku: kolejność nakładania, ilość produktu, czas między warstwami, czego nie łączyć i dlaczego. Każdy krok ma jedno ujęcie i jeden napis z numerem kroku. Widz po obejrzeniu ma umieć powtórzyć rytuał. Fakty o produktach wyłącznie z kart produktów lub notatek.`, SKLEP_ZGODNOSC),
   },
   "rolka-klinika-lifestyle": {
-    label: "Rolka kliniki: lifestyle", cel: "klinika",
+    label: "Klinika: lifestyle", cel: "klinika", group: "rolki",
     prompt: zloz("rolka-klinika-lifestyle", KLINIKA_HEAD, `Przygotuj kompletny scenariusz rolki lifestylowej nagrywanej przez zespół kliniki.
 
 Rolka lifestylowa buduje zaufanie i pokazuje ludzi oraz codzienność kliniki: zespół, przygotowanie gabinetu, pielęgnację między zabiegami, sezonowe porady. Edukuje i ociepla wizerunek; nie sprzedaje zabiegów.`, KLINIKA_ZGODNOSC),
   },
   "rolka-klinika-usluga": {
-    label: "Rolka kliniki: usługa lub problem estetyczny", cel: "klinika", webSearch: true,
+    label: "Klinika: usługa lub problem estetyczny", cel: "klinika", group: "rolki", webSearch: true,
     prompt: zloz("rolka-klinika-usluga", KLINIKA_HEAD, `Przygotuj kompletny scenariusz rolki o usłudze albo problemie estetycznym, nagrywanej przez zespół kliniki.
 
 Rolka wyjaśnia jeden problem estetyczny albo jedną usługę: skąd się bierze problem, jak wygląda konsultacja, na czym polega zabieg, dla kogo jest, czego realnie się spodziewać i kiedy. Kończy się zaproszeniem do konsultacji, nie zakupem zabiegu.`, KLINIKA_ZGODNOSC, ROLKA_OUTPUT,
       "Jeśli masz dostęp do internetu, zweryfikuj kluczowe fakty medyczne w aktualnych, wiarygodnych źródłach i nie wymyślaj statystyk ani badań."),
   },
   "rolka-klinika-faq": {
-    label: "Rolka kliniki: pytanie i odpowiedź, mit czy fakt", cel: "klinika", webSearch: true,
+    label: "Klinika: pytanie i odpowiedź, mit czy fakt", cel: "klinika", group: "rolki", webSearch: true,
     prompt: zloz("rolka-klinika-faq", KLINIKA_HEAD, `Przygotuj kompletny scenariusz rolki, w której specjalista kliniki odpowiada na jedno pytanie widza albo wyjaśnia jeden mit.
 
 Pytanie lub mit pojawia się w hooku (np. jako napis albo cytat komentarza). Odpowiedź jest krótka, konkretna i uczciwa: co jest prawdą, co nie, od czego to zależy. Bez straszenia i bez obietnic. Na końcu zaproszenie do konsultacji albo do zadania kolejnego pytania w komentarzu (bez proszenia o dane zdrowotne).`, KLINIKA_ZGODNOSC, ROLKA_OUTPUT,
       "Jeśli masz dostęp do internetu, zweryfikuj odpowiedź w aktualnych, wiarygodnych źródłach i nie wymyślaj statystyk ani badań."),
   },
   "rolka-influencer-sklep": {
-    label: "Rolka influencera: produkt sklepu", cel: "sklep", group: "influencer",
+    label: "Sklep: rolka twórcy z produktem", cel: "sklep", group: "influencer",
     prompt: zloz("rolka-influencer-sklep", SKLEP_HEAD, `Przygotuj brief i propozycję scenariusza rolki dla influencera, który pokaże produkt sklepu na swoim profilu.
 
 Rolka ma brzmieć jak naturalny materiał twórcy, nie jak spot reklamowy: jego język, jego otoczenie, jego sposób pokazywania pielęgnacji. Produkt i jego kluczowe cechy muszą być przedstawione zgodnie z kartą produktu.`, `${SKLEP_ZGODNOSC}\n${INFLUENCER_ZGODNOSC}`, INFLUENCER_OUTPUT),
   },
   "rolka-influencer-klinika": {
-    label: "Rolka influencera: wizyta lub zabieg w klinice", cel: "klinika", group: "influencer",
+    label: "Klinika: rolka twórcy z wizyty lub zabiegu", cel: "klinika", group: "influencer",
     prompt: zloz("rolka-influencer-klinika", KLINIKA_HEAD, `Przygotuj brief i propozycję scenariusza rolki dla influencera, który odwiedza klinikę albo korzysta z usługi.
 
 Rolka pokazuje prawdziwe doświadczenie twórcy: konsultację, atmosferę, przebieg wizyty, jego odczucia. Nie obiecuje efektów i nie zachęca do zabiegu; zaprasza najwyżej do konsultacji. Wszystkie informacje medyczne mówi specjalista kliniki albo są przedstawione bardzo ostrożnie.`, `${KLINIKA_ZGODNOSC}\n${INFLUENCER_ZGODNOSC}\n- Materiały twórcy o świadczeniach medycznych traktuj szczególnie ostrożnie: tylko informacja i własne doświadczenie, nigdy zachęta do zakupu zabiegu.`, INFLUENCER_OUTPUT),
