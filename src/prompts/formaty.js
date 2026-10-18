@@ -12,7 +12,7 @@ import { SKLEP_ZGODNOSC, KLINIKA_ZGODNOSC } from "./rolki.js";
 
 const pole = {
   temat: (label = "Temat", placeholder = "") => ({ key: "temat", label, required: true, rows: 2, placeholder }),
-  linki: { key: "linki", label: "Linki do naszych stron (produkt, usługa, artykuł)", placeholder: "jeden w linii; Studio pobierze ich treść jako materiał", rows: 2 },
+  linki: { key: "linki", label: "Linki do naszych stron (produkt, usługa, artykuł)", placeholder: "jeden w linii; Writer pobierze ich treść jako materiał", rows: 2 },
   materialy: (placeholder = "fakty, notatki z karty produktu lub opisu usługi; mają pierwszeństwo nad wiedzą modelu") => ({ key: "materialy", label: "Materiały i notatki", rows: 3, placeholder }),
   wspolpraca: { key: "wspolpraca", label: "Współpraca, reklama lub konflikt interesów", placeholder: "jeżeli dotyczy (wymaga oznaczenia)" },
 };

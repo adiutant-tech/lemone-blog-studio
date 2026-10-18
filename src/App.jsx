@@ -1813,7 +1813,7 @@ function App({ session, onLogout }) {
                   : activeModule === "scenariusz"
                   ? "Scenariusze wideo dla każdego kanału: YouTube, Shorts, rolki, Stories, reklama, influencerzy"
                   : activeModule === "archiwum"
-                      ? "Zaakceptowane artykuły: podgląd, edycja HTML, wersje"
+                      ? "Rejestr: zaakceptowane artykuły i zapisane scenariusze; podgląd, edycja, wersje"
                       : "Lista zaproszonych kont Google i role"}
             </p>
           </div>
@@ -1856,7 +1856,7 @@ function App({ session, onLogout }) {
           <ScenarioModule shared={{ normalizeDashes }} session={session} />
         </div>
         {activeModule === "uzytkownicy" && session?.role === "admin" && <AdminUsers />}
-        {activeModule === "archiwum" && session?.role === "admin" && <ArchiveModule shared={{ normalizeDashes, buildFaqCmsJson }} />}
+        {activeModule === "archiwum" && session?.role === "admin" && <ArchiveModule shared={{ normalizeDashes, buildFaqCmsJson }} session={session} />}
         {activeModule === "format" && step === "input" && <InputView input={input} setInput={setInput} onAnalyze={handleAnalyze} />}
         {activeModule === "format" && step === "empty" && <EmptyView onBack={handleReset} />}
         {activeModule === "format" && step === "results" && (
@@ -2059,7 +2059,7 @@ function ResultsView({ products, boxes, progress, allReady, onRetry, tocItems, s
         </>
       ) : (
         <div style={{ marginTop: 28, padding: "14px 18px", background: "#eef4ee", border: "1px solid #cfe0cf", borderRadius: 10, fontSize: 13.5, color: "#2d4a2d" }}>
-          <strong>Tryb edukacyjny</strong> - nie wykryto produktów w artykule. Studio przygotuje spis treści,
+          <strong>Tryb edukacyjny</strong> - nie wykryto produktów w artykule. Writer przygotuje spis treści,
           cleanup kodu i sekcję Q&amp;A (JSON do pola CMS). Boxy produktowe i ItemList są pomijane.
         </div>
       )}

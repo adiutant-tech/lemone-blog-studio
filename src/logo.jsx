@@ -55,8 +55,8 @@ export function CitrusMark({ size = 40, leaf = true, title = "Lemoné" }) {
   );
 }
 
-// Znak + nazwa: „Lemoné” i podpis „Blog Studio”
-export function LemoneLogo({ size = 44, subtitle = "Blog Studio" }) {
+// Znak + nazwa: „Lemoné” i podpis „Writer” (nazwa aplikacji od v4.18; wcześniej Blog Studio)
+export function LemoneLogo({ size = 44, subtitle = "Writer" }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
       <CitrusMark size={size} />

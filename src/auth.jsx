@@ -182,7 +182,7 @@ export function AdminUsers() {
         <div style={{ flex: 1 }} />
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
       </div>
-      <p style={ui.help}>Do Studio wejdą tylko konta Google z tej listy. Admin zarządza listą, edytor ma dostęp do wszystkiego poza nią.</p>
+      <p style={ui.help}>Do Lemoné Writer wejdą tylko konta Google z tej listy. Admin zarządza listą, edytor ma dostęp do wszystkiego poza nią.</p>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 140px auto", gap: 8, alignItems: "end", margin: "12px 0 16px" }}>
         <div>

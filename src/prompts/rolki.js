@@ -26,7 +26,7 @@ export function rolkaFields(kind) {
       ? { key: "wystepuje", label: "Twórca: nick, platforma, styl, odbiorcy", required: true, rows: 2, placeholder: "np. @nick, Instagram 40 tys., spokojny styl, kobiety 25-40 dbające o skórę" }
       : { key: "wystepuje", label: "Kto występuje lub mówi", required: true, placeholder: sklep ? "np. Joanna z zespołu sklepu, sam lektor bez twarzy" : "np. kosmetolożka kliniki, lekarz, recepcja, sam lektor" },
     { key: "produkty", ...PRODUKT_POLE[kind] },
-    { key: "linki", label: "Linki do naszych stron (produkt, usługa, artykuł)", placeholder: "jeden w linii; Studio pobierze ich treść jako materiał", rows: 2 },
+    { key: "linki", label: "Linki do naszych stron (produkt, usługa, artykuł)", placeholder: "jeden w linii; Writer pobierze ich treść jako materiał", rows: 2 },
     ...(influencer ? [{ key: "przekazy", label: "Przekazy obowiązkowe i zakazane", rows: 2, placeholder: "np. obowiązkowo: kod rabatowy, link w bio; zakazane: porównania z innymi markami, obietnice efektów" }] : []),
     { key: "odbiorcy", label: "Odbiorcy", placeholder: influencer ? "domyślnie odbiorcy twórcy" : sklep ? "domyślnie osoby dbające o skórę, 25-45 lat" : "domyślnie osoby rozważające zabiegi estetyczne, okolice Częstochowy i online" },
     { key: "cel", label: "Cel i wezwanie do działania", placeholder: sklep ? "np. odwiedź sklep, zobacz produkt w bio" : "np. umów konsultację, zapytaj w DM" },

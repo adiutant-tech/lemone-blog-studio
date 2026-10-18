@@ -1,8 +1,8 @@
 // === Wersja aplikacji (v4.14) ===
 // Jedno miejsce na numer i opis wersji: plakietka w nagłówku i plik version.json (vite.config.js).
 // Przy każdej zmianie funkcjonalnej podbij APP_VERSION i opisz zmianę w APP_VERSION_NOTE.
-export const APP_VERSION = "v4.17";
-export const APP_VERSION_NOTE = "Praca etapami: zatwierdzanie, poprawki i ponowienia z uwagami, szkice w toku";
+export const APP_VERSION = "v4.18";
+export const APP_VERSION_NOTE = "Lemoné Writer: nowa nazwa, Rejestr z artykułami i scenariuszami";
 
 // Znacznik builda wstawiany przez Vite (define); w trybie dev "dev" = sprawdzanie wyłączone
 // eslint-disable-next-line no-undef
