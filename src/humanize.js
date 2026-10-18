@@ -98,7 +98,7 @@ function parseArray(text) {
 
 const linksOf = (html) => (String(html).match(/<a\b[^>]*href="[^"]*"/gi) || []).join("|");
 
-function instructions(rules, { mode, keyword, klinika }) {
+function instructions(rules, { mode, keyword, klinika, voice }) {
   const extra = [
     keyword ? `- Fraza kluczowa "${keyword}": zachowaj każde jej wystąpienie (SEO); nie dodawaj nowych.` : "",
     klinika ? "- Treść medyczna: NIE zmieniaj wskazań, przeciwwskazań, ocen jakości dowodów, oznaczeń off-label ani ostrzeżeń; redagujesz wyłącznie styl." : "",
@@ -107,7 +107,7 @@ function instructions(rules, { mode, keyword, klinika }) {
       : "- Jeśli cały fragment jest slopem (np. końcowe podsumowanie powtarzające tekst), zwróć dla niego pusty tekst \"\"; zostanie usunięty.",
   ].filter(Boolean).join("\n");
   return `${rules}
-
+${voice ? `\nGŁOS MARKI LEMONÉ (wzorzec tonu: zachowaj go; nie zamieniaj sformułowań zgodnych z tym głosem na inne):\n${voice}\n` : ""}
 TRYB PRACY APLIKACJI (nadrzędny wobec powyższego):
 - To nie rozmowa: nie zadawaj pytań i nie dodawaj sekcji "Co zmieniono". Niejasny fragment zostaw bez zmian.
 - Dostajesz tablicę JSON kolejnych fragmentów jednej sekcji ${mode === "script" ? "scenariusza wideo" : "artykułu"} (HTML wewnątrz akapitu lub punktu listy). Cała tablica to kontekst: usuwaj powtórzenia między fragmentami.
@@ -118,13 +118,13 @@ ${extra}`;
 }
 
 // Główna funkcja: zwraca { html, changed, removed } (html bez zmian, jeśli nic nie poprawiono)
-export async function humanizeHtml(html, { callModel, rules, mode = "article", format, keyword, klinika, track, onProgress }) {
+export async function humanizeHtml(html, { callModel, rules, mode = "article", format, keyword, klinika, voice, track, onProgress }) {
   const d = new DOMParser().parseFromString(`<div id="root">${html}</div>`, "text/html");
   const root = d.getElementById("root");
   const groups = mode === "script" ? scriptGroups(root, format) : articleGroups(root);
   const todo = batches(groups);
   if (!todo.length) throw new Error("Nie znaleziono tekstu do humanizacji.");
-  const cached = instructions(rules, { mode, keyword, klinika });
+  const cached = instructions(rules, { mode, keyword, klinika, voice });
   let changed = 0, removed = 0;
   for (let k = 0; k < todo.length; k++) {
     const g = todo[k];

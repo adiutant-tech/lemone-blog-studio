@@ -17,6 +17,7 @@ import { SCENARIUSZ_PROMPT_DEFAULT, SCENARIUSZ_FIELDS } from "./prompts/scenariu
 import { ROLKI, rolkaFields } from "./prompts/rolki.js";
 import { FORMATY, formatFields } from "./prompts/formaty.js";
 import { humanizeHtml, loadAntiSlopRules, ANTI_SLOP_PROMPT } from "./humanize.js";
+import { loadVoice, voiceBlock, VOICE } from "./brandVoice.js";
 import { StageStepper, StageCard, DraftStatus, useDraftSaver, listDrafts, getDraft, deleteDraft, stageStatus, curVersion, pushVersion, pickVersion, approveStage, regenNote } from "./stages.jsx";
 import { ANTI_SLOP_DEFAULT } from "./prompts/antiSlop.js";
 
@@ -246,6 +247,8 @@ export default function ScenarioModule({ shared, session }) {
   const [kind, setKind] = useState(() => { const k = lsGet("lemone_scen_kind", "lekarz-yt"); return KINDS[k] ? k : "lekarz-yt"; });
   const prompt = usePrompt(kind);
   const antiSlop = usePromptNamed(ANTI_SLOP_PROMPT, ANTI_SLOP_DEFAULT);
+  const glosKlinika = usePromptNamed(VOICE.klinika.prompt, VOICE.klinika.defaultText);
+  const glosSklep = usePromptNamed(VOICE.sklep.prompt, VOICE.sklep.defaultText);
   const [promptView, setPromptView] = useState("rodzaj"); // rodzaj | humanizacja
   // v4.16: stan generacji z formularza; chroni przed utratą pracy przy zmianie rodzaju
   const [gen, setGen] = useState({ busy: false, progress: false });
@@ -286,10 +289,12 @@ export default function ScenarioModule({ shared, session }) {
         {tab === "prompt" && (
           <select value={promptView} onChange={e => setPromptView(e.target.value)} style={{ ...ui.input, width: "auto" }} aria-label="Który prompt">
             <option value="rodzaj">Prompt matka rodzaju</option>
+            <option value="glos-klinika">Głos marki: klinika</option>
+            <option value="glos-sklep">Głos marki: sklep</option>
             <option value="humanizacja">Zasady humanizacji (no-ai-slop)</option>
           </select>
         )}
-        {tab !== "lista" && !(tab === "prompt" && promptView === "humanizacja") && <KindSelect value={kind} onChange={changeKind} disabled={gen.busy} />}
+        {tab !== "lista" && !(tab === "prompt" && promptView !== "rodzaj") && <KindSelect value={kind} onChange={changeKind} disabled={gen.busy} />}
         {gen.busy && tab !== "nowy" && (
           <button onClick={() => setTab("nowy")} style={{ ...ui.btnSecondary, padding: "5px 10px" }}><Loader2 size={13} className="spin" /> Trwa generacja etapu: pokaż</button>
         )}
@@ -310,7 +315,11 @@ export default function ScenarioModule({ shared, session }) {
       {tab === "lista" && (openId
         ? <ScriptEditor id={openId} shared={shared} author={author} onBack={() => setOpenId(null)} />
         : <ScriptList onOpen={setOpenId} session={session} onResume={openDraft} />)}
-      {tab === "prompt" && (promptView === "humanizacja"
+      {tab === "prompt" && (promptView === "glos-klinika" || promptView === "glos-sklep"
+        ? <PromptEditor key={promptView} prompt={promptView === "glos-klinika" ? glosKlinika : glosSklep} author={author} profile={theme.profile[promptView === "glos-klinika" ? "klinika" : "sklep"]}
+            title={VOICE[promptView === "glos-klinika" ? "klinika" : "sklep"].label} source="src/prompts/glosMarki.js"
+            intro="Ton komunikacji marki. Trafia automatycznie do wszystkich scenariuszy i artykułów tego celu oraz do humanizacji. Każdy zapis tworzy nową wersję w historii; rozpoczęte szkice zachowują wersję z chwili startu." />
+        : promptView === "humanizacja"
         ? <PromptEditor key="anti-slop" prompt={antiSlop} author={author} profile={P}
             title="Zasady humanizacji (no-ai-slop)" source="src/prompts/antiSlop.js"
             intro="Wspólne dla przycisku Humanizacja w artykułach i scenariuszach. Każdy zapis tworzy nową wersję w historii." />
@@ -444,11 +453,13 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
 
   // Aktualny stan dla asynchronicznych kroków (stan Reacta w zamknięciu bywa nieaktualny)
   const R = useRef({});
-  R.current = { ...R.current, inputs, model, webSearch, depth, auto, choices, excluded };
+  // Aktualizacja w miejscu (nie nowy obiekt): zapis po await, np. R.current.voice = await ..., trafia do bieżącego obiektu
+  Object.assign(R.current, { inputs, model, webSearch, depth, auto, choices, excluded });
   if (R.current.stages === undefined) R.current.stages = stages;
   if (R.current.own === undefined) R.current.own = d0?.own ?? null;
   if (R.current.promptSnap === undefined) R.current.promptSnap = d0?.promptText ? { text: d0.promptText, version: d0.promptVersion || 0 } : null;
   if (R.current.usd === undefined) R.current.usd = Number(d0?.usd) || 0;
+  if (R.current.voice === undefined) R.current.voice = d0?.voiceText ?? null; // głos marki zapisany w szkicu (spójny w całym scenariuszu)
 
   const ORDER = [...(webSearch ? ["weryfikacja"] : []), ...(long ? ["plan", "pol1", "pol2", "pakiet"] : ["brief", "scenariusz", "pakiet"])];
   const stageList = ORDER.map(k => ({ key: k, ...STAGE_META[k], ...(stages[k] || { versions: [] }) }));
@@ -492,7 +503,7 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
     saver.save({
       kind, title: (c.inputs.temat || "").trim().slice(0, 140) || "(bez tematu)", stage: stageLabel(st),
       data: { kind, inputs: c.inputs, model: c.model, webSearch: c.webSearch, depth: c.depth, auto: c.auto, stages: st, choices: c.choices, excluded: c.excluded,
-        own: c.own, promptText: c.promptSnap?.text, promptVersion: c.promptSnap?.version, usd: c.usd },
+        own: c.own, promptText: c.promptSnap?.text, promptVersion: c.promptSnap?.version, voiceText: c.voice, usd: c.usd },
     });
   };
   const commit = (st) => { R.current.stages = st; setStages(st); };
@@ -506,7 +517,8 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
   };
   const context = () => {
     const c = R.current;
-    const base = `${c.promptSnap.text}\n\n${appRules(K.format)}\n\n${inputsBlock(kind, c.inputs, c.own || [])}`;
+    const voice = voiceBlock(c.voice, { influencer: K.group === "influencer" });
+    const base = `${c.promptSnap.text}\n\n${voice ? voice + "\n\n" : ""}${appRules(K.format)}\n\n${inputsBlock(kind, c.inputs, c.own || [])}`;
     const res = ORDER.includes("weryfikacja") ? cur("weryfikacja") : null;
     const exc = c.excluded.length ? `\nNIE KORZYSTAJ z tych źródeł (odrzucone przez redakcję): ${c.excluded.join(", ")}` : "";
     const research = res
@@ -550,6 +562,7 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
     setBusyKey(key); setFailedKey(null); setError(null); setDetail(null); setStepStart(Date.now()); setSelected(key);
     const usdBefore = R.current.usd;
     try {
+      if (R.current.voice == null) R.current.voice = await loadVoice(K.cel);
       const prev = regen?.mode === "popraw" ? cur(key) : null;
       const content = await generators[key](regen, prev);
       const st = pushVersion(R.current.stages, key, { content, at: new Date().toISOString(), by: author, usd: R.current.usd - usdBefore, uwagi: regen?.uwagi || "", source: "model" }, ORDER);
@@ -935,9 +948,10 @@ export function ScriptEditor({ id, shared, author, onBack }) {
     setHumanizeStep("Wczytuję zasady humanizacji...");
     try {
       const rules = await loadAntiSlopRules();
+      const voice = await loadVoice(K.cel);
       let usd = 0;
       const res = await humanizeHtml(current.html, {
-        callModel, rules, mode: "script", format: F, klinika: K.cel === "klinika",
+        callModel, rules, mode: "script", format: F, klinika: K.cel === "klinika", voice,
         track: (e) => { usd += e.usd; },
         onProgress: (p) => setHumanizeStep(`Humanizacja: ${p.label} (${p.current}/${p.total})`),
       });
