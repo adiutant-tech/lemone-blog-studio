@@ -8,7 +8,7 @@
 // odświeżany przy każdym zapisie. Scenariusze (Worker /scripts) widzą i edytują wszyscy.
 
 import { useState, useEffect, useRef } from "react";
-import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles } from "lucide-react";
+import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles, CheckCircle2, Circle, XCircle, Plus, X, Users } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
 import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
@@ -225,9 +225,10 @@ function usePromptNamed(name, defaultText) {
 }
 const usePrompt = (kind) => { const K = kindOf(kind); return usePromptNamed(K.promptName, K.defaultPrompt); };
 
-function KindSelect({ value, onChange, withAll = false }) {
+function KindSelect({ value, onChange, withAll = false, disabled = false }) {
   return (
-    <select value={value} onChange={e => onChange(e.target.value)} style={{ ...ui.input, width: "auto" }} aria-label="Rodzaj scenariusza">
+    <select value={value} onChange={e => onChange(e.target.value)} disabled={disabled} style={{ ...ui.input, width: "auto" }} aria-label="Rodzaj scenariusza"
+      title={disabled ? "Rodzaj można zmienić po zakończeniu generacji" : ""}>
       {withAll && <option value="">Wszystkie rodzaje</option>}
       {Object.entries(GROUPS).map(([g, gl]) => (
         <optgroup key={g} label={gl}>
@@ -245,6 +246,13 @@ export default function ScenarioModule({ shared, session }) {
   const prompt = usePrompt(kind);
   const antiSlop = usePromptNamed(ANTI_SLOP_PROMPT, ANTI_SLOP_DEFAULT);
   const [promptView, setPromptView] = useState("rodzaj"); // rodzaj | humanizacja
+  // v4.16: stan generacji z formularza; chroni przed utratą pracy przy zmianie rodzaju
+  const [gen, setGen] = useState({ busy: false, progress: false });
+  const changeKind = (k) => {
+    if (k === kind) return;
+    if (gen.progress && !window.confirm("Zmiana rodzaju porzuci rozpoczętą generację scenariusza (gotowe części i formularz). Kontynuować?")) return;
+    setKind(k); lsSet("lemone_scen_kind", k);
+  };
   const [who, setWho] = useState(() => lsGet("lemone_review_name"));
   const author = session?.email || who.trim();
   const P = theme.profile[kindOf(kind).cel];
@@ -269,7 +277,10 @@ export default function ScenarioModule({ shared, session }) {
             <option value="humanizacja">Zasady humanizacji (no-ai-slop)</option>
           </select>
         )}
-        {tab !== "lista" && !(tab === "prompt" && promptView === "humanizacja") && <KindSelect value={kind} onChange={(k) => { setKind(k); lsSet("lemone_scen_kind", k); }} />}
+        {tab !== "lista" && !(tab === "prompt" && promptView === "humanizacja") && <KindSelect value={kind} onChange={changeKind} disabled={gen.busy} />}
+        {gen.busy && tab !== "nowy" && (
+          <button onClick={() => setTab("nowy")} style={{ ...ui.btnSecondary, padding: "5px 10px" }}><Loader2 size={13} className="spin" /> Trwa generacja: pokaż</button>
+        )}
         <div style={{ flex: 1 }} />
         {!session && (
           <input value={who} onChange={e => { setWho(e.target.value); lsSet("lemone_review_name", e.target.value); }}
@@ -278,7 +289,11 @@ export default function ScenarioModule({ shared, session }) {
         {tab !== "lista" && <span style={ui.help}>Prompt: {prompt.version ? `wersja ${prompt.version}` : "domyślny"}</span>}
       </div>
 
-      {tab === "nowy" && <NewScenario key={kind} kind={kind} shared={shared} prompt={prompt} author={author} onSaved={(id) => { setOpenId(id); setTab("lista"); }} />}
+      {/* v4.16: formularz zostaje zamontowany (tylko ukryty), żeby przejście na inną zakładkę nie przerywało generacji */}
+      <div style={{ display: tab === "nowy" ? "block" : "none" }}>
+        <NewScenario key={kind} kind={kind} shared={shared} prompt={prompt} author={author} onActivity={setGen}
+          onSaved={(id) => { setOpenId(id); setTab("lista"); }} />
+      </div>
       {tab === "lista" && (openId
         ? <ScriptEditor id={openId} shared={shared} author={author} onBack={() => setOpenId(null)} />
         : <ScriptList onOpen={setOpenId} session={session} />)}
@@ -293,21 +308,128 @@ export default function ScenarioModule({ shared, session }) {
   );
 }
 
+// === Wybór osób na nagraniu (v4.16) ===
+// Gotowe pozycje do kliknięcia + własne osoby zapamiętane w tej przeglądarce. Wartość pola to lista
+// rozdzielona średnikami (trafia do promptu jak dotąd). Domyślnie lek. med. Agnieszka Tomala.
+export const DEFAULT_PERSON = "lek. med. Agnieszka Tomala";
+const PEOPLE = [DEFAULT_PERSON, "Influencer (twórca)", "Pracownik kliniki", "Pracownik sklepu", "Kosmetolog", "Recepcja", "Lektor (głos zza kadru)", "Pacjent (za pisemną zgodą)"];
+const PEOPLE_KEY = "lemone_people_custom";
+const isPeopleField = (K, f) => (f.key === "lekarz" || f.key === "wystepuje") && K.group !== "influencer";
+const splitPeople = (v) => String(v || "").split(";").map(x => x.trim()).filter(Boolean);
+
+function PeoplePicker({ value, onChange, disabled, profile: P }) {
+  const [custom, setCustom] = useState(() => { try { return JSON.parse(lsGet(PEOPLE_KEY, "[]")) || []; } catch (e) { return []; } });
+  const [draft, setDraft] = useState("");
+  const selected = splitPeople(value);
+  const all = [...PEOPLE, ...custom.filter(c => !PEOPLE.includes(c)), ...selected.filter(x => !PEOPLE.includes(x) && !custom.includes(x))];
+  const toggle = (name) => onChange((selected.includes(name) ? selected.filter(x => x !== name) : [...selected, name]).join("; "));
+  const saveCustom = (list) => { setCustom(list); lsSet(PEOPLE_KEY, JSON.stringify(list)); };
+  const add = () => {
+    const name = draft.replace(/;/g, ",").trim();
+    if (!name) return;
+    if (!PEOPLE.includes(name) && !custom.includes(name)) saveCustom([...custom, name]);
+    if (!selected.includes(name)) onChange([...selected, name].join("; "));
+    setDraft("");
+  };
+  const forget = (name) => { saveCustom(custom.filter(c => c !== name)); if (selected.includes(name)) toggle(name); };
+  return (
+    <div style={{ border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, padding: 10, background: theme.color.surface }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {all.map(name => {
+          const on = selected.includes(name);
+          const own = custom.includes(name) && !PEOPLE.includes(name);
+          return (
+            <span key={name} style={{ display: "inline-flex", alignItems: "center", borderRadius: theme.radius.pill, border: `1px solid ${on ? P.accent : theme.color.border}`, background: on ? P.soft : theme.color.surface }}>
+              <button type="button" onClick={() => toggle(name)} disabled={disabled} aria-pressed={on}
+                style={{ border: "none", background: "transparent", padding: "5px 10px", cursor: disabled ? "default" : "pointer", fontSize: theme.size.small + 0.5, fontFamily: "inherit", fontWeight: on ? 600 : 500, color: theme.color.text, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                {on ? <CheckCircle2 size={13} color={P.accentHover} /> : <Circle size={13} color={theme.color.textMuted} />} {name}
+              </button>
+              {own && !disabled && (
+                <button type="button" onClick={() => forget(name)} title="Usuń z zapamiętanych" aria-label={`Usuń ${name}`}
+                  style={{ border: "none", background: "transparent", padding: "0 8px 0 0", cursor: "pointer", color: theme.color.textMuted, display: "inline-flex" }}><X size={12} /></button>
+              )}
+            </span>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        <input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); add(); } }} disabled={disabled}
+          style={{ ...ui.input, padding: "6px 10px" }} placeholder="Dodaj osobę, np. Joanna, pracownik sklepu (zapamiętamy ją)" />
+        <button type="button" onClick={add} disabled={disabled || !draft.trim()} style={{ ...ui.btnSecondary, padding: "6px 10px", ...(disabled || !draft.trim() ? ui.btnDisabled : {}) }}><Plus size={13} /> Dodaj</button>
+      </div>
+      {!selected.length && <p style={{ ...ui.help, color: theme.color.danger }}>Wybierz co najmniej jedną osobę.</p>}
+    </div>
+  );
+}
+
+// === Okno postępu generacji (v4.16): kroki ze stanem, czas od startu, koszt ===
+const mmss = (ms) => { const t = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+function ProgressPanel({ steps, stage, busy, failed, detail, startedAt, usd, profile: P }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { if (!busy) return undefined; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [busy]);
+  const done = steps.filter(s => s.done).length;
+  const pct = Math.round((done / steps.length) * 100);
+  return (
+    <div style={{ marginTop: theme.space(2), border: `1px solid ${failed ? theme.color.danger : theme.color.border}`, borderRadius: theme.radius.card, padding: "14px 16px", background: theme.color.bg }} role="status" aria-live="polite">
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+        <strong style={{ fontFamily: theme.font.heading, fontSize: theme.size.h3 }}>{failed ? "Generacja przerwana" : "Trwa generacja scenariusza"}</strong>
+        <span style={ui.help}>krok {Math.min(done + 1, steps.length)} z {steps.length}{startedAt ? ` · czas ${mmss((busy ? now : Date.now()) - startedAt)}` : ""} · koszt {usd.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 99, background: theme.color.border, overflow: "hidden", marginBottom: 10 }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: failed ? theme.color.danger : P.accent, transition: "width .4s ease" }} />
+      </div>
+      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
+        {steps.map(s => {
+          const current = s.key === stage && !s.done;
+          const icon = s.done ? <CheckCircle2 size={15} color={P.accentHover} />
+            : current && failed ? <XCircle size={15} color={theme.color.danger} />
+            : current && busy ? <Loader2 size={15} className="spin" color={P.accentHover} />
+            : <Circle size={15} color={theme.color.textMuted} />;
+          return (
+            <li key={s.key} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: theme.size.body, color: s.done || current ? theme.color.text : theme.color.textMuted, fontWeight: current ? 600 : 400 }}>
+              <span style={{ marginTop: 2 }}>{icon}</span>
+              <span style={{ flex: 1 }}>
+                {s.label} <span style={{ ...ui.help, fontWeight: 400 }}>· {s.done ? "gotowe" : s.hint}</span>
+                {current && detail && busy && <span style={{ display: "block", ...ui.help, margin: "2px 0 0", fontWeight: 400 }}>{detail}</span>}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      {busy && <p style={{ ...ui.help, margin: "10px 0 0" }}>Możesz przełączać zakładki; generacja trwa dalej. Nie zamykaj i nie odświeżaj strony.</p>}
+    </div>
+  );
+}
+
 // === Nowy scenariusz: formularz rodzaju + generacja w częściach ===
-function NewScenario({ kind, shared, prompt, author, onSaved }) {
+function NewScenario({ kind, shared, prompt, author, onSaved, onActivity }) {
   const K = kindOf(kind);
   const F = FORMATS[K.format];
   const P = theme.profile[K.cel];
-  const [inputs, setInputs] = useState({});
+  // pole osób ma od razu wartość domyślną (lek. med. Agnieszka Tomala)
+  const [inputs, setInputs] = useState(() => { const pf = K.fields.find(f => isPeopleField(K, f)); return pf ? { [pf.key]: DEFAULT_PERSON } : {}; });
   const [model, setModel] = useState(() => { const m = lsGet("lemone_scen_model", DEFAULT_MODEL); return MODELS[m] ? m : DEFAULT_MODEL; });
   const [webSearch, setWebSearch] = useState(K.webSearch);
   const [depth, setDepth] = useState(isLong(K.format) ? "standard" : "szybkie");
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState(null);
+  const [stage, setStage] = useState(null); // klucz bieżącego kroku (okno postępu)
+  const [startedAt, setStartedAt] = useState(null);
+  const go = (key, text) => { setStage(key); setStep(text); };
   const [error, setError] = useState(null);
   const [costs, setCosts] = useState([]);
   const parts = useRef({}); // wyniki udanych części (ponowienie nie powtarza ich)
   const costsRef = useRef([]); // aktualna suma kosztu do zapisu (stan w zamknięciu generate jest nieaktualny)
+
+  // Ochrona przed utratą pracy: rodzic wie o generacji (blokada zmiany rodzaju), przeglądarka ostrzega przy zamknięciu
+  const hasProgress = busy || !!stage;
+  useEffect(() => { onActivity && onActivity({ busy, progress: hasProgress }); }, [busy, hasProgress]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!busy) return undefined;
+    const warn = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [busy]);
 
   const ready = K.fields.filter(f => f.required).every(f => (inputs[f.key] || "").trim()) && prompt.loaded;
   const track = (e) => { costsRef.current = [...costsRef.current, e]; setCosts(costsRef.current); };
@@ -328,16 +450,17 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
 
   const generate = async () => {
     setBusy(true); setError(null);
+    if (!startedAt) setStartedAt(Date.now());
     const p = parts.current;
     try {
       if (p.own === undefined) {
-        if ((inputs.linki || "").trim()) setStep("Pobieram treść naszych stron...");
+        if ((inputs.linki || "").trim()) go("strony", "Pobieram treść naszych stron...");
         p.own = await fetchOwnPages(inputs.linki);
       }
       const base = `${prompt.text}\n\n${appRules(K.format)}\n\n${inputsBlock(kind, inputs, p.own)}`;
       if (p.research === undefined) {
         if (webSearch) {
-          setStep("Weryfikacja w źródłach (web search)...");
+          go("weryfikacja", "Szukam i czytam źródła...");
           p.research = await callModel(
             `${base}\n\nCZĘŚĆ 1: tylko weryfikacja. Sprawdź w aktualnych, wiarygodnych źródłach kluczowe fakty potrzebne do tego materiału${K.promptName === "scenariusz" ? " (krok 1 promptu: SPRAWDŹ PODSTAWY)" : ""}. Zwróć zwięzłą notatkę (maks. ok. ${isLong(K.format) ? 800 : 400} słów, zwykły tekst w punktach): datę weryfikacji, ustalenia z URL źródła w nawiasie przy każdym punkcie. Bez scenariusza.`,
             opts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[depth].uses, stage: "weryfikacja" }));
@@ -352,37 +475,37 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
 
       if (isLong(K.format)) {
         if (!p.plan) {
-          setStep("Plan scenariusza, tytuły i otwarcia (A-C)...");
+          go("plan", "Piszę brief, tytuły z miniaturami i dwa warianty otwarcia...");
           p.plan = norm(await call({ cached: ctx, text: `CZĘŚĆ 2 z 4: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}).` }, { maxTokens: 16000, effort: "medium", stage: "plan" }, "Plan"));
         }
         // Pełny scenariusz w dwóch połowach: cała tabela filmu 8-15 min z "myśleniem" modelu nie mieści się
         // w jednej odpowiedzi (limit 16 tys. tokenów); gotowa pierwsza połowa nie jest powtarzana przy ponowieniu
         if (!p.script) {
           if (!p.half1) {
-            setStep("Pełny scenariusz (D), pierwsza połowa...");
+            go("pol1", "Piszę otwarcie i pierwszą połowę tabeli scenariusza...");
             p.half1 = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nCZĘŚĆ 3 z 4, PIERWSZA POŁOWA: zwróć <h2>${S.D}</h2> i tabelę <table> z wierszem nagłówka ${K.tableHead || F.tableHead}, obejmującą pierwszą połowę filmu: otwarcie wybrane w C i rozwinięcie do mniej więcej połowy długości z briefu. Zakończ na pełnym wierszu, bez zakończenia filmu i bez komentarzy.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz, połowa 1"));
           }
-          setStep("Pełny scenariusz (D), druga połowa...");
+          go("pol2", "Piszę dalszą część i zakończenie...");
           const half2 = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nPIERWSZA POŁOWA SEKCJI D (gotowa):\n${p.half1}\n\nCZĘŚĆ 3 z 4, DRUGA POŁOWA: zwróć WYŁĄCZNIE kolejne wiersze <tr> tej samej tabeli (bez <table>, bez wiersza nagłówka, bez <h2>), od miejsca, w którym kończy się pierwsza połowa, do końca filmu razem z zakończeniem. Kontynuuj czasy, nie powtarzaj wierszy.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz, połowa 2"));
           p.script = joinTableHalves(p.half1, half2);
         }
         if (!p.pack) {
-          setStep("Pakiet publikacyjny, kontrola jakości, plan oceny (F-H)...");
+          go("pakiet", "Piszę opis, rozdziały, kontrolę jakości i plan oceny...");
           p.pack = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-D:\n${p.plan}\n${p.script}\n\nCZĘŚĆ 4 z 4: zwróć wyłącznie sekcje F, G i H (${S.F}, ${S.G}, ${S.H}). W G sprawdź rzeczywisty scenariusz z sekcji D.` }, { maxTokens: 16000, effort: "low", stage: "pakiet" }, "Pakiet"));
         }
       } else {
         if (!p.script) {
-          setStep(`Brief, warianty otwarcia i scenariusz (A-C)...`);
+          go("scenariusz", "Piszę brief, warianty hooka i tabelę scenariusza...");
           p.plan = "";
           p.script = norm(await call({ cached: ctx, text: `CZĘŚĆ 2 z 3: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). Sekcja C to jedna tabela <table> z wierszem nagłówka ${K.tableHead || F.tableHead}.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz"));
         }
         if (!p.pack) {
-          setStep(`Publikacja, kontrola zgodności i plan oceny (E-G)...`);
+          go("pakiet", "Piszę opis do publikacji, kontrolę zgodności i plan oceny...");
           p.pack = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.script}\n\nCZĘŚĆ 3 z 3: zwróć wyłącznie sekcje E, F i G (${S.E}, ${S.F}, ${S.G}). W F sprawdź rzeczywisty scenariusz z sekcji C.` }, { maxTokens: 16000, effort: "low", stage: "pakiet" }, "Publikacja"));
         }
       }
 
-      setStep("Zapisuję...");
+      go("zapis", "Zapisuję i otwieram do edycji...");
       const sourcesHtml = p.research?.sources?.length
         ? `<h2>Źródła z weryfikacji (${today()})</h2><ol>${p.research.sources.slice(0, 30).map(s => `<li><a href="${s.url.replace(/"/g, "&quot;")}" target="_blank" rel="noopener">${(s.title || s.url).replace(/</g, "&lt;")}</a></li>`).join("")}</ol>`
         : "";
@@ -394,7 +517,7 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
       });
       parts.current = {};
       costsRef.current = [];
-      setCosts([]);
+      setCosts([]); setStage(null); setStartedAt(null);
       onSaved(saved.id);
     } catch (e) {
       setError(`${e.message}. Kliknij ponownie „Generuj scenariusz”: gotowe części nie zostaną powtórzone.`);
@@ -402,7 +525,24 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
     setBusy(false); setStep(null);
   };
 
-  const set = (k, v) => { setInputs({ ...inputs, [k]: v }); parts.current = {}; };
+  const set = (k, v) => { setInputs({ ...inputs, [k]: v }); parts.current = {}; setStage(null); setStartedAt(null); setError(null); };
+
+  // Lista kroków tego rodzaju; "gotowe" wynika z zapisanych części (ponowienie ich nie powtarza)
+  const pc = parts.current;
+  const steps = [
+    ...((inputs.linki || "").trim() ? [{ key: "strony", label: "Treść naszych stron", hint: "kilka sekund", done: pc.own !== undefined }] : []),
+    ...(webSearch ? [{ key: "weryfikacja", label: "Weryfikacja w źródłach", hint: "ok. 1 min", done: !!pc.research }] : []),
+    ...(isLong(K.format) ? [
+      { key: "plan", label: "Brief, tytuły i otwarcia (A-C)", hint: "ok. 1 min", done: !!pc.plan },
+      { key: "pol1", label: "Pełny scenariusz: pierwsza połowa", hint: "1-2 min", done: !!pc.half1 || !!pc.script },
+      { key: "pol2", label: "Pełny scenariusz: druga połowa", hint: "1-2 min", done: !!pc.script },
+      { key: "pakiet", label: "Pakiet publikacyjny, kontrola, plan oceny (F-H)", hint: "ok. 1 min", done: !!pc.pack },
+    ] : [
+      { key: "scenariusz", label: "Brief, hooki i scenariusz (A-C)", hint: "ok. 1 min", done: !!pc.script },
+      { key: "pakiet", label: "Publikacja, kontrola, plan oceny (E-G)", hint: "kilkadziesiąt sekund", done: !!pc.pack },
+    ]),
+    { key: "zapis", label: "Zapis i otwarcie do edycji", hint: "kilka sekund", done: false },
+  ];
 
   return (
     <div style={ui.card}>
@@ -421,9 +561,11 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: theme.space(2) }}>
         {K.fields.map(f => (
-          <div key={f.key} style={f.rows > 2 ? { gridColumn: "1 / -1" } : undefined}>
-            <label style={ui.label}>{f.label}{f.required ? " *" : ""}</label>
-            {f.rows ? (
+          <div key={f.key} style={f.rows > 2 || isPeopleField(K, f) ? { gridColumn: "1 / -1" } : undefined}>
+            <label style={ui.label}>{isPeopleField(K, f) ? <><Users size={12} style={{ verticalAlign: "-1px" }} /> Kto wystąpi w nagraniu</> : f.label}{f.required ? " *" : ""}</label>
+            {isPeopleField(K, f) ? (
+              <PeoplePicker value={inputs[f.key]} onChange={v => set(f.key, v)} disabled={busy} profile={P} />
+            ) : f.rows ? (
               <textarea value={inputs[f.key] || ""} onChange={e => set(f.key, e.target.value)} rows={f.rows} disabled={busy}
                 style={{ ...ui.input, resize: "vertical" }} placeholder={f.placeholder || ""} />
             ) : (
@@ -450,7 +592,10 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
           {busy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} Generuj scenariusz
         </button>
       </div>
-      {step && <p style={{ ...ui.help, color: theme.color.text }}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> {step}</p>}
+      {(busy || error) && stage && (
+        <ProgressPanel steps={steps} stage={stage} busy={busy} failed={!!error && !busy} detail={step} startedAt={startedAt}
+          usd={costs.reduce((sum, c) => sum + c.usd, 0)} profile={P} />
+      )}
       {error && <div style={{ ...ui.banner("danger"), marginTop: 10 }}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
       <CostMeter costs={costs} />
       <p style={ui.help}>{isLong(K.format) ? "Scenariusz filmu powstaje w kilka minut (pełny scenariusz w dwóch połowach)." : "Scenariusz powstaje w 1-2 minuty."} Scenariusz zapisuje się automatycznie i otwiera do edycji.</p>
