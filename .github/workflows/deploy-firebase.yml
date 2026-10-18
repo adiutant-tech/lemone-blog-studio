@@ -1,0 +1,54 @@
+name: Deploy to Firebase Hosting
+
+# Docelowy adres Studia od 2026-10-18: https://lmm-writer-8feb.web.app (projekt lemone-writer).
+# Wymaga sekretu repozytorium FIREBASE_SERVICE_ACCOUNT_LEMONE_WRITER (klucz JSON konta usługi z rolą
+# "Firebase Hosting Admin"). Dopóki sekretu nie ma, wdrożenie jest pomijane (wdrożenie ręczne: firebase deploy).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check service account secret
+        id: sa
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_LEMONE_WRITER }}
+        run: |
+          if [ -n "$SA" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; echo "::notice::Brak sekretu FIREBASE_SERVICE_ACCOUNT_LEMONE_WRITER - wdrożenie Firebase pominięte"; fi
+
+      - uses: actions/setup-node@v4
+        if: steps.sa.outputs.present == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+        if: steps.sa.outputs.present == 'true'
+
+      - name: Build
+        if: steps.sa.outputs.present == 'true'
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          BASE_PATH: /
+        run: npm run build
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        if: steps.sa.outputs.present == 'true'
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_LEMONE_WRITER }}
+          projectId: lemone-writer
+          target: writer
+          channelId: live

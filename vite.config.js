@@ -27,6 +27,7 @@ function versionFile() {
 
 export default defineConfig(({ command }) => ({
   plugins: [react(), versionFile()],
-  base: '/lemone-blog-studio/',
+  // Ścieżka bazowa: '/' dla Firebase Hosting (lmm-writer-8feb.web.app); GitHub Pages ustawia BASE_PATH=/lemone-blog-studio/
+  base: process.env.BASE_PATH || '/',
   define: { __BUILD_ID__: JSON.stringify(command === 'build' ? BUILD_ID : 'dev') },
 }));

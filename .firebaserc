@@ -1,0 +1,12 @@
+{
+  "projects": {
+    "default": "lemone-writer"
+  },
+  "targets": {
+    "lemone-writer": {
+      "hosting": {
+        "writer": ["lmm-writer-8feb"]
+      }
+    }
+  }
+}
