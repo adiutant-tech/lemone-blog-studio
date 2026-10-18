@@ -16,8 +16,9 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Sparkles, Copy, Check, RefreshCw, AlertCircle, Loader2, Pencil, ChevronRight, ChevronUp, ChevronDown, FileText, ArrowRight, RotateCcw, Search, Paperclip, Upload, Youtube, Image as ImageIcon, X, Link2 } from "lucide-react";
 import theme, { ui } from "./theme.js";
-import { AcceptPanel } from "./shared.jsx"; // akceptacja autora i zapis w Rejestrze (v4.8)
-import { apiFetch } from "./auth.jsx";
+import { AcceptPanel, RegistryRow } from "./shared.jsx"; // akceptacja autora i zapis w Rejestrze (v4.8)
+import { apiFetch, getSession } from "./auth.jsx";
+import { StageStepper, StageCard, DraftStatus, useDraftSaver, listDrafts, getDraft, deleteDraft, stageStatus, curVersion, regenNote } from "./stages.jsx"; // praca etapami (v4.17)
 import { humanizeHtml, loadAntiSlopRules } from "./humanize.js"; // humanizacja no-ai-slop na żądanie (v4.13)
 import { DZIEDZINY } from "./prompts/klinika.js";
 
@@ -728,6 +729,19 @@ export default function Generator({ shared, onSendToFormat }) {
   const [copiedFaq, setCopiedFaq] = useState(false);
   const [copiedNote, setCopiedNote] = useState(false);
   const finishCache = useRef(null); // wyniki etapu końcowego do ponowienia bez powtórek
+  // v4.17: sekcje pisane i zatwierdzane po kolei; każda ma wersje (ponowienie z uwagami, edycja ręczna)
+  const [secStages, setSecStages] = useState({}); // { u0: {versions:[{content, at, by, usd, uwagi, source}], cur, approved} }
+  const [secBusy, setSecBusy] = useState(null);    // indeks jednostki w generacji
+  const [secFailed, setSecFailed] = useState(null);
+  const [secSelected, setSecSelected] = useState(null);
+  const [secStart, setSecStart] = useState(null);
+  const [autoWrite, setAutoWrite] = useState(false);
+  const secRef = useRef({});
+  const usdRef = useRef(0);
+  const saver = useDraftSaver("artykul");
+  const [drafts, setDrafts] = useState([]);
+  const session = getSession();
+  const me = session?.email || "";
 
   const productsOk = !isRanking || (parsedProducts.items.length >= MIN_RANKING_PRODUCTS && parsedProducts.errors.length === 0);
   const canStart = topic.trim() && keyword.trim() && productsOk && ownPagesBad.length === 0;
@@ -737,7 +751,7 @@ export default function Generator({ shared, onSendToFormat }) {
   });
   // Licznik kosztu przebiegu (szacunek z usage API, per etap)
   const [costs, setCosts] = useState([]);
-  const track = (e) => setCosts(c => [...c, e]);
+  const track = (e) => { usdRef.current += e.usd; setCosts(c => [...c, e]); };
   const opts = (o = {}) => ({ model, track, ...o });
   const [humanizeStep, setHumanizeStep] = useState(null);
   const [humanizeMsg, setHumanizeMsg] = useState(null);
@@ -856,55 +870,138 @@ export default function Generator({ shared, onSendToFormat }) {
         return { page, section, anchor: String(l.anchor || "").trim() };
       }).filter((l, i, arr) => own[l.page] && l.section >= 0 && sections[l.section]?.kind !== "ranking" && l.anchor
         && arr.findIndex(x => x.page === l.page) === i);
-      setOutline({ h1: j.h1, chosenH1: j.h1[0], sections, products, links, overlap: String(j.overlap || "").trim() });
+      const ol = { h1: j.h1, chosenH1: j.h1[0], sections, products, links, overlap: String(j.overlap || "").trim() };
+      setOutline(ol);
       setPhase("outline");
+      persistDraft({ outline: ol, secStages: {}, result: null });
     } catch (e) { setError(e.message || String(e)); setPhase("form"); }
   };
 
-  const writeUnit = async (unit, prevHtml) => {
+  const writeUnit = async (unit, prevHtml, regen, prevContent) => {
     const f = formData();
     const prevExcerpt = prevHtml ? stripTags(prevHtml).slice(-300) : "";
+    const withNote = (p) => ({ ...p, text: p.text + regenNote(regen, prevContent) });
     if (unit.kind === "product") {
-      const prose = stripFences(await callModel(buildProductPrompt(f, outline, unit), opts({ maxTokens: 3000, stage: "sekcje" })));
+      const prose = stripFences(await callModel(withNote(buildProductPrompt(f, outline, unit)), opts({ maxTokens: 3000, stage: "sekcje" })));
       return `<div class="product">${buildProductHead(unit.product)}\n${prose}\n</div>`;
     }
     const prompt = unit.kind === "rankingIntro"
       ? buildRankingIntroPrompt(f, outline, unit, prevExcerpt)
       : buildSectionPrompt(f, outline, unit, prevExcerpt);
-    return stripFences(await callModel(prompt, opts({ maxTokens: 6000, stage: "sekcje" })));
+    return stripFences(await callModel(withNote(prompt), opts({ maxTokens: 6000, stage: "sekcje" })));
   };
 
-  // Pisze jednostki od `parts.length` do końca; wspólne dla startu i ponowienia.
-  const writeFrom = async (parts) => {
+  // === Pisanie etapami (v4.17) ===
+  // Każda jednostka (lead, sekcja, otwarcie listy, produkt) czeka na zatwierdzenie; "bez zatwierdzania"
+  // pisze wszystko od razu jak przed v4.17. Gotowe sekcje nie są powtarzane przy ponowieniu.
+  const unitKey = (i) => `u${i}`;
+  const unitHtml = (i, st = secRef.current) => curVersion(st[unitKey(i)])?.content;
+  const commitSec = (st) => { secRef.current = st; setSecStages(st); };
+  const persistDraft = (extra = {}) => {
+    const st = extra.secStages || secRef.current;
+    const units = outline ? buildUnits(outline) : [];
+    const done = units.filter((u, i) => st[unitKey(i)]?.approved).length;
+    const label = extra.result || result ? "Artykuł gotowy, do akceptacji"
+      : units.length && Object.keys(st).length ? `Sekcje: zatwierdzone ${done} z ${units.length}`
+      : "Konspekt do akceptacji";
+    saver.save({
+      kind: typ, title: (extra.outline || outline)?.chosenH1 || topic.slice(0, 140) || "(bez tematu)", stage: label,
+      data: {
+        cel, typSklep, dziedzina, promptMatka, keyword, keywordsAux, topic, materials, ownPagesText, ownPages, productsText,
+        length, redline, model, webSearch, searchDepth, research, outline, autoWrite,
+        secStages: st, result: extra.result !== undefined ? extra.result : result, usd: usdRef.current, ...extra.data,
+        ...(extra.outline ? { outline: extra.outline } : {}),
+      },
+    });
+  };
+
+  const writeAt = async (i, regen) => {
     const units = buildUnits(outline);
-    const total = units.length;
+    setSecBusy(i); setSecFailed(null); setError(null); setSecSelected(unitKey(i)); setSecStart(Date.now());
+    setProgress({ current: i + 1, total: units.length, label: "Piszę" });
+    const before = usdRef.current;
     try {
-      for (let i = parts.length; i < total; i++) {
-        setProgress({ current: i + 1, total, label: "Piszę" });
-        const html = await writeUnit(units[i], parts[parts.length - 1]);
-        parts.push(html);
-        setSecHtml([...parts]);
-        if (i < total - 1) await new Promise(r => setTimeout(r, SECTION_GAP_MS));
-      }
+      const prev = i > 0 ? unitHtml(i - 1) : null;
+      const html = shared.normalizeDashes(await writeUnit(units[i], prev, regen, regen?.mode === "popraw" ? unitHtml(i) : null));
+      const k = unitKey(i);
+      const old = secRef.current[k] || { versions: [] };
+      const versions = [...(old.versions || []), { content: html, at: new Date().toISOString(), by: me, usd: usdRef.current - before, uwagi: regen?.uwagi || "", source: "model" }];
+      const st = { ...secRef.current, [k]: { versions, cur: versions.length - 1, approved: false } };
+      commitSec(st); persistDraft({ secStages: st });
+      setSecBusy(null); setProgress(null);
+      return true;
     } catch (e) {
-      setFailed(true);
-      setError(`Padło: ${unitLabel(units[parts.length])} (${parts.length + 1}/${total}): ${e.message}. Możesz ponowić od tego miejsca.`);
-      return;
+      setSecBusy(null); setProgress(null); setSecFailed(i);
+      setError(`Padło: ${unitLabel(units[i])} (${i + 1}/${units.length}): ${e.message}. Ponów ten fragment.`);
+      return false;
     }
-    setFailed(false);
-    await finishPipeline(parts, units);
+  };
+
+  // Następna jednostka bez wyniku pisze się sama; po zatwierdzeniu wszystkich rusza etap końcowy
+  const advanceSections = async (auto = autoWrite) => {
+    const units = buildUnits(outline);
+    for (;;) {
+      const st = secRef.current;
+      const i = units.findIndex((u, x) => !st[unitKey(x)]?.approved);
+      if (i < 0) { await finishPipeline(units.map((u, x) => unitHtml(x)), units); return; }
+      if (!st[unitKey(i)]?.versions?.length) {
+        const ok = await writeAt(i);
+        if (!ok) return;
+        if (i < units.length - 1) await new Promise(r => setTimeout(r, auto ? SECTION_GAP_MS : 0));
+      }
+      if (!auto) { setSecSelected(unitKey(i)); return; }
+      const a2 = { ...secRef.current, [unitKey(i)]: { ...secRef.current[unitKey(i)], approved: true } };
+      commitSec(a2);
+    }
   };
 
   const startWriting = async () => {
-    setError(null); setFailed(false); setPhase("writing");
-    setSecHtml([]);
-    await writeFrom([]);
+    setError(null); setFailed(false); setPhase("sections");
+    commitSec({}); setSecHtml([]);
+    persistDraft({ secStages: {} });
+    await advanceSections();
   };
+  const approveUnit = async (i) => {
+    const st = { ...secRef.current, [unitKey(i)]: { ...secRef.current[unitKey(i)], approved: true } };
+    commitSec(st); persistDraft({ secStages: st });
+    await advanceSections();
+  };
+  const editUnit = (i, html) => {
+    const k = unitKey(i);
+    const old = secRef.current[k];
+    const versions = [...old.versions, { content: shared.normalizeDashes(html), at: new Date().toISOString(), by: me, usd: 0, uwagi: "", source: "edycja" }];
+    const st = { ...secRef.current, [k]: { versions, cur: versions.length - 1, approved: false } };
+    commitSec(st); persistDraft({ secStages: st });
+  };
+  const pickUnit = (i, v) => {
+    const k = unitKey(i);
+    const st = { ...secRef.current, [k]: { ...secRef.current[k], cur: v, approved: false } };
+    commitSec(st); persistDraft({ secStages: st });
+  };
+  const retryFailed = async () => { setError(null); if (secFailed != null) { const ok = await writeAt(secFailed); if (ok && autoWrite) await advanceSections(); } };
 
-  const retryFailed = async () => {
-    setError(null);
-    await writeFrom([...secHtml]);
+  // Szkice artykułów: lista "W toku" i wznowienie
+  const loadDrafts = async () => { try { setDrafts(await listDrafts("artykul")); } catch (e) { /* lista opcjonalna */ } };
+  useEffect(() => { loadDrafts(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const resumeDraft = async (id) => {
+    const d = await getDraft(id);
+    const x = d.data || {};
+    setCel(x.cel || "sklep"); setTypSklep(x.typSklep || "edukacyjny"); setDziedzina(x.dziedzina || "trychologia");
+    setKeyword(x.keyword || ""); setKeywordsAux(x.keywordsAux || ""); setTopic(x.topic || "");
+    setMaterials(x.materials || ""); setOwnPagesText(x.ownPagesText || ""); setOwnPages(x.ownPages || []); setProductsText(x.productsText || "");
+    setLength(x.length || "standard"); setWebSearch(x.webSearch !== false); setSearchDepth(x.searchDepth || "standard");
+    setResearch(x.research || null); setOutline(x.outline || null); setAutoWrite(!!x.autoWrite);
+    // efekty zależne od celu i typu (prompt matka, model, redakcja) nadpisują pola po zmianie celu; ustawiamy je po nich
+    setTimeout(() => { setPromptMatka(x.promptMatka || ""); setModel(x.model || DEFAULT_MODEL); setRedline(x.redline !== undefined ? x.redline : true); }, 80);
+    usdRef.current = Number(x.usd) || 0;
+    commitSec(x.secStages || {});
+    finishCache.current = null;
+    setResult(x.result || null);
+    setError(null); setWarning(null); setProgress(null); setFailed(false); setSecFailed(null);
+    setPhase(x.result ? "done" : Object.keys(x.secStages || {}).length ? "sections" : x.outline ? "outline" : "form");
+    saver.attach(id);
   };
+  const removeDraftRow = async (id) => { await deleteDraft(id); setDrafts(ds => ds.filter(d => d.id !== id)); };
 
   // Redakcja sekcja po sekcji; karty produktów (ranking) pomijane
   const redlineParts = async (parts, units, f) => {
@@ -930,7 +1027,7 @@ export default function Generator({ shared, onSendToFormat }) {
         onProgress: (p) => setHumanizeStep(`Humanizacja: ${p.label} (${p.current}/${p.total})`),
       });
       const html = shared.normalizeDashes(res.html);
-      setResult(r => ({ ...r, html, words: stripTags(html).split(/s+/).filter(Boolean).length, humanizedFrom: r.humanizedFrom || r.html }));
+      setResult(r => ({ ...r, html, words: stripTags(html).split(/\s+/).filter(Boolean).length, humanizedFrom: r.humanizedFrom || r.html }));
       setHumanizeMsg({ ok: true, text: `Humanizacja gotowa: poprawione fragmenty ${res.changed}${res.removed ? `, usunięte ${res.removed}` : ""}. Nagłówki, linki, boxy, spis treści i FAQ bez zmian.` });
     } catch (e) {
       setHumanizeMsg({ ok: false, text: `Humanizacja nie powiodła się: ${e.message}. Artykuł bez zmian; możesz spróbować ponownie.` });
@@ -938,7 +1035,7 @@ export default function Generator({ shared, onSendToFormat }) {
     setHumanizeStep(null);
   };
   const undoHumanize = () => {
-    setResult(r => ({ ...r, html: r.humanizedFrom, words: stripTags(r.humanizedFrom).split(/s+/).filter(Boolean).length, humanizedFrom: undefined }));
+    setResult(r => ({ ...r, html: r.humanizedFrom, words: stripTags(r.humanizedFrom).split(/\s+/).filter(Boolean).length, humanizedFrom: undefined }));
     setHumanizeMsg({ ok: true, text: "Przywrócono wersję sprzed humanizacji." });
   };
 
@@ -959,7 +1056,8 @@ export default function Generator({ shared, onSendToFormat }) {
       const body = cache.body;
       if (f.typ === "ranking") {
         const words = stripTags(body).split(/\s+/).filter(Boolean).length;
-        setResult({ html: body, faqItems: [], words, draft: true });
+        const r0 = { html: body, faqItems: [], words, draft: true };
+        setResult(r0); persistDraft({ result: r0 });
       } else if (f.typ === "klinika") {
         const bodyText = stripTags(body);
         setProgress({ current: 1, total: 2, label: "FAQ i notatka dla lekarza" });
@@ -978,7 +1076,8 @@ export default function Generator({ shared, onSendToFormat }) {
         const sources = noteSources(research);
         const note = shared.normalizeDashes(stripFences(await callModel(buildDoctorNotePrompt(f, outline, bodyText, sources), opts({ maxTokens: 8000, effortLow: true, stage: "notatka" }))));
         const words = stripTags(html).split(/\s+/).filter(Boolean).length;
-        setResult({ html, faqItems, words, draft: false, note, sources });
+        const r1 = { html, faqItems, words, draft: false, note, sources };
+        setResult(r1); persistDraft({ result: r1 });
       } else {
         // Normalizacja całości (pipeline normalizuje FAQ i boxy, body artykułu robimy tu)
         const toc = shared.extractTocItems(body);
@@ -989,13 +1088,14 @@ export default function Generator({ shared, onSendToFormat }) {
         // Pełny pipeline formatowania: TOC, cleanup, kotwice; zero boxów (ścieżka bez produktów)
         const finalHtml = shared.buildCompleteArticle(body, [], {}, toc, faqItems);
         const words = stripTags(finalHtml).split(/\s+/).filter(Boolean).length;
-        setResult({ html: finalHtml, faqItems, words, draft: false });
+        const r2 = { html: finalHtml, faqItems, words, draft: false };
+        setResult(r2); persistDraft({ result: r2 });
       }
       setPhase("done");
     } catch (e) {
       setFailed(false);
       setError(`Etap końcowy padł: ${e.message}`);
-      setPhase("writing");
+      setPhase("finishing");
     }
     setProgress(null);
   };
@@ -1014,6 +1114,8 @@ export default function Generator({ shared, onSendToFormat }) {
   const resetAll = () => {
     setPhase("form"); setOutline(null); setSecHtml([]); setResult(null); setResearch(null);
     finishCache.current = null;
+    commitSec({}); setSecFailed(null); setSecSelected(null); usdRef.current = 0;
+    saver.detach(); loadDrafts();
     setCosts([]);
     setError(null); setWarning(null); setProgress(null); setFailed(false);
   };
@@ -1262,6 +1364,18 @@ export default function Generator({ shared, onSendToFormat }) {
           </div>
         )}
 
+        {phase === "form" && drafts.length > 0 && (
+          <div style={{ marginBottom: theme.space(2), padding: 12, borderRadius: theme.radius.control, background: theme.color.warningSoft }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, fontFamily: theme.font.heading }}>W toku: {drafts.length} {drafts.length === 1 ? "szkic artykułu" : "szkice artykułów"}</div>
+            {drafts.map(d => (
+              <RegistryRow key={d.id} onOpen={() => resumeDraft(d.id)} deleteLabel={d.title || "szkic"} right="Wznów"
+                onDelete={session && (session.role === "admin" || session.email === d.author) ? () => removeDraftRow(d.id) : null}>
+                <div style={{ fontWeight: 600 }}>{d.title || "(bez tematu)"}</div>
+                <div style={{ ...ui.help, margin: "3px 0 0" }}>{TYPES[d.kind]?.label || d.kind} · {d.stage} · {d.author}{d.updatedBy && d.updatedBy !== d.author ? `, ostatnio ${d.updatedBy}` : ""} · {new Date(d.updatedAt).toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" })}</div>
+              </RegistryRow>
+            ))}
+          </div>
+        )}
         {phase === "form" && (
           <button onClick={genOutline} disabled={!canStart}
             style={{ ...ui.btnPrimary(P), ...(canStart ? {} : ui.btnDisabled) }}
@@ -1270,9 +1384,12 @@ export default function Generator({ shared, onSendToFormat }) {
           </button>
         )}
         {phase !== "form" && (
-          <button onClick={resetAll} style={ui.btnSecondary}>
-            <FileText size={13} /> Nowy artykuł (reset)
-          </button>
+          <div style={{ display: "grid", gap: 6 }}>
+            <button onClick={() => { if (secBusy == null && (phase === "done" || window.confirm("Zacząć nowy artykuł? Bieżący zostaje jako szkic na liście „W toku”."))) resetAll(); }} disabled={secBusy != null} style={ui.btnSecondary}>
+              <FileText size={13} /> Nowy artykuł (reset)
+            </button>
+            <DraftStatus saver={saver} />
+          </div>
         )}
       </div>
 
@@ -1372,30 +1489,76 @@ export default function Generator({ shared, onSendToFormat }) {
               )}
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={startWriting} style={ui.btnPrimary(P)}>
-                  <ChevronRight size={15} /> Akceptuję, pisz artykuł
+                  <ChevronRight size={15} /> {autoWrite ? "Akceptuję, pisz cały artykuł" : "Akceptuję konspekt, pisz lead"}
                 </button>
                 <button onClick={genOutline} style={ui.btnSecondary}>
                   <RefreshCw size={13} /> Inny konspekt
                 </button>
               </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: theme.size.small + 1, marginTop: 10, cursor: "pointer" }}>
+                <input type="checkbox" checked={autoWrite} onChange={e => setAutoWrite(e.target.checked)} />
+                Bez zatwierdzania (wszystkie sekcje od razu, jak przed v4.17)
+              </label>
               <p style={ui.help}>
-                Wywołań modelu: {totalUnits}{redline ? ` + ${outline.sections.filter(s => s.kind !== "ranking").length + 1 + (isRanking ? 1 : 0)} redakcji` : ""}{isKlinika ? " + FAQ + notatka" : ""}, gap {SECTION_GAP_MS / 1000}s. Model: {MODELS[model]}.
+                {autoWrite ? "" : "Każdy fragment (lead, sekcje, produkty) zatrzyma się do zatwierdzenia; możesz go poprawić ręcznie albo wygenerować ponownie z uwagami. "}Wywołań modelu: {totalUnits}{redline ? ` + ${outline.sections.filter(s => s.kind !== "ranking").length + 1 + (isRanking ? 1 : 0)} redakcji` : ""}{isKlinika ? " + FAQ + notatka" : ""}, gap {SECTION_GAP_MS / 1000}s. Model: {MODELS[model]}.
               </p>
               <CostMeter costs={costs} />
             </div>
           )}
 
-          {(phase === "writing" || phase === "finishing") && (
+          {phase === "sections" && outline && (() => {
+            const units = buildUnits(outline);
+            const list = units.map((u, i) => ({ key: unitKey(i), label: unitLabel(u).replace(/^./, c => c.toUpperCase()), hint: u.kind === "product" ? "ok. 20 s" : "ok. 30-60 s", ...(secStages[unitKey(i)] || { versions: [] }) }));
+            const statusOf = (x) => stageStatus(x, { runningKey: secBusy != null ? unitKey(secBusy) : null, failedKey: secFailed != null ? unitKey(secFailed) : null });
+            const nextIdx = units.findIndex((u, i) => !secStages[unitKey(i)]?.approved);
+            const shownKey = secSelected || (nextIdx >= 0 ? unitKey(nextIdx) : null);
+            const shown = list.find(x => x.key === shownKey);
+            const si = shown ? Number(shown.key.slice(1)) : -1;
+            const busyNow = secBusy != null;
+            return (
+              <>
+                <StageStepper stages={list} statusOf={statusOf} selected={shownKey} onSelect={setSecSelected} usd={usdRef.current}
+                  startedAt={secStart} busy={busyNow} profile={P}
+                  extra={!busyNow && nextIdx >= 0 ? (
+                    <button onClick={() => { setAutoWrite(true); advanceSections(true); }} style={{ ...ui.btnSecondary, padding: "4px 10px" }} title="Zatwierdza bieżący i pisze resztę bez zatrzymywania">
+                      Dopisz resztę bez zatwierdzania
+                    </button>
+                  ) : null} />
+                {busyNow && (
+                  <div style={{ ...ui.card, display: "flex", alignItems: "center", gap: 10 }}>
+                    <Loader2 size={16} className="spin" color={P.accentHover} />
+                    <span style={{ fontSize: theme.size.body }}>Piszę: <strong>{unitLabel(units[secBusy])}</strong> ({secBusy + 1} z {units.length}). Możesz przełączać zakładki; nie zamykaj strony.</span>
+                  </div>
+                )}
+                {error && (
+                  <div style={ui.banner("danger")}>
+                    <AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}
+                    {secFailed != null && <div style={{ marginTop: 8 }}><button onClick={retryFailed} style={ui.btnSecondary}><RefreshCw size={13} /> Ponów ten fragment</button></div>}
+                  </div>
+                )}
+                {shown && !busyNow && shown.versions.length > 0 && (
+                  <StageCard stage={shown} status={statusOf(shown)} busy={busyNow} profile={P}
+                    approveLabel={si === units.length - 1 ? "Zatwierdź i złóż artykuł" : "Zatwierdź i dalej"}
+                    onApprove={() => approveUnit(si)} onRegenerate={(r) => writeAt(si, r)} onEdit={(v) => editUnit(si, v)} onPickVersion={(v) => pickUnit(si, v)}
+                    note={units[si]?.kind === "section" && units[si].sec?.thesis ? <p style={{ ...ui.help, marginTop: 0 }}>Teza z konspektu: {units[si].sec.thesis}</p> : null} />
+                )}
+                <p style={ui.help}>Po zatwierdzeniu ostatniego fragmentu ruszy etap końcowy: {redline ? "redakcja, " : ""}{isRanking ? "szkic rankingu" : isKlinika ? "FAQ i notatka dla lekarza" : "spis treści i FAQ"}. Gotowy artykuł możesz jeszcze przejrzeć, zhumanizować i zaakceptować.</p>
+                <CostMeter costs={costs} />
+              </>
+            );
+          })()}
+
+          {phase === "finishing" && (
             <div style={ui.card}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: theme.space(2) }}>
-                <Loader2 size={16} className="spin" color={P.accentHover} />
+                {!error && <Loader2 size={16} className="spin" color={P.accentHover} />}
                 <span style={{ fontSize: theme.size.body, fontWeight: 600 }}>
-                  {progress
+                  {error ? "Etap końcowy przerwany" : progress
                     ? `${progress.label}: ${progress.current} z ${progress.total}`
-                    : (isRanking ? "Składam szkic rankingu..." : "Pipeline końcowy...")}
+                    : (isRanking ? "Składam szkic rankingu..." : "Etap końcowy...")}
                 </span>
               </div>
-              {progress && (
+              {progress && !error && (
                 <div style={{ height: 8, background: theme.color.border, borderRadius: 99, overflow: "hidden" }}>
                   <div style={{ height: "100%", width: `${(progress.current / progress.total) * 100}%`, background: P.accent, transition: "width .3s ease" }} />
                 </div>
@@ -1403,17 +1566,15 @@ export default function Generator({ shared, onSendToFormat }) {
               {error && (
                 <div style={{ ...ui.banner("danger"), marginTop: theme.space(2) }}>
                   <AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}
-                  <div style={{ marginTop: 10 }}>
-                    <button onClick={failed ? retryFailed : () => { setError(null); finishPipeline(secHtml, buildUnits(outline)); }} style={ui.btnSecondary}>
-                      <RefreshCw size={13} /> {failed ? "Ponów od padłego miejsca" : "Ponów etap końcowy"}
+                  <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button onClick={() => { setError(null); const units = buildUnits(outline); finishPipeline(units.map((u, i) => unitHtml(i)), units); }} style={ui.btnSecondary}>
+                      <RefreshCw size={13} /> Ponów etap końcowy
                     </button>
+                    <button onClick={() => { setError(null); setPhase("sections"); }} style={ui.btnSecondary}>Wróć do sekcji</button>
                   </div>
                 </div>
               )}
               <CostMeter costs={costs} />
-              {secHtml.length > 0 && (
-                <p style={{ ...ui.help, marginTop: 10 }}>Gotowe fragmenty: {secHtml.length}. Gap {SECTION_GAP_MS / 1000}s między wywołaniami (ochrona rate limit).</p>
-              )}
             </div>
           )}
 
@@ -1456,7 +1617,7 @@ export default function Generator({ shared, onSendToFormat }) {
               )}
 
               {!result.draft && (
-                <AcceptPanel kind={isKlinika ? "klinika" : "sklep"} profile={P} onAccepted={setAcceptedHtml} payload={{
+                <AcceptPanel kind={isKlinika ? "klinika" : "sklep"} profile={P} onAccepted={(h) => { setAcceptedHtml(h); saver.remove(); loadDrafts(); }} payload={{
                   typ, model, title: outline.chosenH1, topic, keyword,
                   usd: costs.reduce((sum, c) => sum + c.usd, 0),
                   html: result.html, faqItems: result.faqItems,
@@ -1482,7 +1643,7 @@ export default function Generator({ shared, onSendToFormat }) {
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 {result.draft ? (
                   <>
-                    <button onClick={() => onSendToFormat && onSendToFormat(result.html)} style={ui.btnPrimary(P)} disabled={!onSendToFormat}>
+                    <button onClick={() => { if (!onSendToFormat) return; saver.remove(); onSendToFormat(result.html); }} style={ui.btnPrimary(P)} disabled={!onSendToFormat}>
                       <ArrowRight size={14} /> Przekaż do Formatowania
                     </button>
                     <button onClick={() => copyText(result.html, setCopiedArt)} style={ui.btnSecondary}>

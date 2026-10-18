@@ -17,6 +17,7 @@ import { SCENARIUSZ_PROMPT_DEFAULT, SCENARIUSZ_FIELDS } from "./prompts/scenariu
 import { ROLKI, rolkaFields } from "./prompts/rolki.js";
 import { FORMATY, formatFields } from "./prompts/formaty.js";
 import { humanizeHtml, loadAntiSlopRules, ANTI_SLOP_PROMPT } from "./humanize.js";
+import { StageStepper, StageCard, DraftStatus, useDraftSaver, listDrafts, getDraft, deleteDraft, stageStatus, curVersion, pushVersion, pickVersion, approveStage, regenNote } from "./stages.jsx";
 import { ANTI_SLOP_DEFAULT } from "./prompts/antiSlop.js";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
@@ -248,10 +249,21 @@ export default function ScenarioModule({ shared, session }) {
   const [promptView, setPromptView] = useState("rodzaj"); // rodzaj | humanizacja
   // v4.16: stan generacji z formularza; chroni przed utratą pracy przy zmianie rodzaju
   const [gen, setGen] = useState({ busy: false, progress: false });
+  // v4.17: szkic do wznowienia (z listy "W toku") i licznik nowego startu
+  const [resume, setResume] = useState(null);
+  const [resetN, setResetN] = useState(0);
   const changeKind = (k) => {
     if (k === kind) return;
-    if (gen.progress && !window.confirm("Zmiana rodzaju porzuci rozpoczętą generację scenariusza (gotowe części i formularz). Kontynuować?")) return;
+    if (gen.progress && !window.confirm("Rozpoczęty scenariusz zostanie zapisany jako szkic na liście „W toku” (Scenariusze), a formularz przełączy się na nowy rodzaj. Kontynuować?")) return;
+    setResume(null); setResetN(n => n + 1);
     setKind(k); lsSet("lemone_scen_kind", k);
+  };
+  const openDraft = async (id) => {
+    if (gen.busy) { window.alert("Trwa generacja etapu; poczekaj na jej koniec."); return; }
+    if (gen.progress && !window.confirm("Otworzyć szkic? Bieżąca praca zostaje jako osobny szkic na liście „W toku”.")) return;
+    const d = await getDraft(id);
+    if (!KINDS[d.kind]) { window.alert("Nieznany rodzaj scenariusza w szkicu."); return; }
+    setKind(d.kind); setResume(d); setResetN(n => n + 1); setTab("nowy"); setOpenId(null);
   };
   const [who, setWho] = useState(() => lsGet("lemone_review_name"));
   const author = session?.email || who.trim();
@@ -279,7 +291,7 @@ export default function ScenarioModule({ shared, session }) {
         )}
         {tab !== "lista" && !(tab === "prompt" && promptView === "humanizacja") && <KindSelect value={kind} onChange={changeKind} disabled={gen.busy} />}
         {gen.busy && tab !== "nowy" && (
-          <button onClick={() => setTab("nowy")} style={{ ...ui.btnSecondary, padding: "5px 10px" }}><Loader2 size={13} className="spin" /> Trwa generacja: pokaż</button>
+          <button onClick={() => setTab("nowy")} style={{ ...ui.btnSecondary, padding: "5px 10px" }}><Loader2 size={13} className="spin" /> Trwa generacja etapu: pokaż</button>
         )}
         <div style={{ flex: 1 }} />
         {!session && (
@@ -291,12 +303,13 @@ export default function ScenarioModule({ shared, session }) {
 
       {/* v4.16: formularz zostaje zamontowany (tylko ukryty), żeby przejście na inną zakładkę nie przerywało generacji */}
       <div style={{ display: tab === "nowy" ? "block" : "none" }}>
-        <NewScenario key={kind} kind={kind} shared={shared} prompt={prompt} author={author} onActivity={setGen}
-          onSaved={(id) => { setOpenId(id); setTab("lista"); }} />
+        <NewScenario key={`${kind}|${resume?.id || "nowy"}|${resetN}`} kind={kind} shared={shared} prompt={prompt} author={author} session={session}
+          onActivity={setGen} resume={resume} onReset={() => { setResume(null); setResetN(n => n + 1); }}
+          onSaved={(id) => { setResume(null); setResetN(n => n + 1); setOpenId(id); setTab("lista"); }} />
       </div>
       {tab === "lista" && (openId
         ? <ScriptEditor id={openId} shared={shared} author={author} onBack={() => setOpenId(null)} />
-        : <ScriptList onOpen={setOpenId} session={session} />)}
+        : <ScriptList onOpen={setOpenId} session={session} onResume={openDraft} />)}
       {tab === "prompt" && (promptView === "humanizacja"
         ? <PromptEditor key="anti-slop" prompt={antiSlop} author={author} profile={P}
             title="Zasady humanizacji (no-ai-slop)" source="src/prompts/antiSlop.js"
@@ -362,68 +375,90 @@ function PeoplePicker({ value, onChange, disabled, profile: P }) {
   );
 }
 
-// === Okno postępu generacji (v4.16): kroki ze stanem, czas od startu, koszt ===
-const mmss = (ms) => { const t = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
-function ProgressPanel({ steps, stage, busy, failed, detail, startedAt, usd, profile: P }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => { if (!busy) return undefined; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [busy]);
-  const done = steps.filter(s => s.done).length;
-  const pct = Math.round((done / steps.length) * 100);
+// === Nowy scenariusz etapami (v4.17) ===
+// Po każdym etapie generacja się zatrzymuje: zatwierdzasz, poprawiasz ręcznie albo generujesz ponownie
+// z uwagami. Film: weryfikacja, plan (Ty wybierasz tytuł i otwarcie), dwie połowy scenariusza, pakiet.
+// Krótkie formy: weryfikacja, brief z hookami (Ty wybierasz hook), scenariusz, publikacja.
+// Szkic zapisuje się na serwerze po każdym kroku (lista "W toku" w zakładce Scenariusze).
+// Opcja "bez zatwierdzania" przechodzi wszystkie etapy od razu, jak przed v4.17.
+const STAGE_META = {
+  weryfikacja: { label: "Weryfikacja w źródłach", hint: "ok. 1 min" },
+  plan: { label: "Brief, tytuły i otwarcia (A-C)", hint: "ok. 1 min" },
+  pol1: { label: "Pełny scenariusz: pierwsza połowa", hint: "1-2 min" },
+  pol2: { label: "Pełny scenariusz: druga połowa i zakończenie", hint: "1-2 min" },
+  brief: { label: "Brief i warianty hooka (A-B)", hint: "ok. 1 min" },
+  scenariusz: { label: "Scenariusz (C)", hint: "ok. 1 min" },
+  pakiet: { label: "Pakiet, kontrola i plan oceny", hint: "ok. 1 min" },
+};
+const CHOICE_OPTS = {
+  tytul: ["rekomendacja modelu", "Zestaw 1", "Zestaw 2", "Zestaw 3"],
+  otwarcie: ["rekomendacja modelu", "Wariant 1", "Wariant 2"],
+  hook: ["rekomendacja modelu", "Wariant 1", "Wariant 2", "Wariant 3"],
+};
+
+function ChoiceSelect({ label, value, options, onChange, disabled }) {
   return (
-    <div style={{ marginTop: theme.space(2), border: `1px solid ${failed ? theme.color.danger : theme.color.border}`, borderRadius: theme.radius.card, padding: "14px 16px", background: theme.color.bg }} role="status" aria-live="polite">
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
-        <strong style={{ fontFamily: theme.font.heading, fontSize: theme.size.h3 }}>{failed ? "Generacja przerwana" : "Trwa generacja scenariusza"}</strong>
-        <span style={ui.help}>krok {Math.min(done + 1, steps.length)} z {steps.length}{startedAt ? ` · czas ${mmss((busy ? now : Date.now()) - startedAt)}` : ""} · koszt {usd.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</span>
-      </div>
-      <div style={{ height: 6, borderRadius: 99, background: theme.color.border, overflow: "hidden", marginBottom: 10 }}>
-        <div style={{ width: `${pct}%`, height: "100%", background: failed ? theme.color.danger : P.accent, transition: "width .4s ease" }} />
-      </div>
-      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
-        {steps.map(s => {
-          const current = s.key === stage && !s.done;
-          const icon = s.done ? <CheckCircle2 size={15} color={P.accentHover} />
-            : current && failed ? <XCircle size={15} color={theme.color.danger} />
-            : current && busy ? <Loader2 size={15} className="spin" color={P.accentHover} />
-            : <Circle size={15} color={theme.color.textMuted} />;
-          return (
-            <li key={s.key} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: theme.size.body, color: s.done || current ? theme.color.text : theme.color.textMuted, fontWeight: current ? 600 : 400 }}>
-              <span style={{ marginTop: 2 }}>{icon}</span>
-              <span style={{ flex: 1 }}>
-                {s.label} <span style={{ ...ui.help, fontWeight: 400 }}>· {s.done ? "gotowe" : s.hint}</span>
-                {current && detail && busy && <span style={{ display: "block", ...ui.help, margin: "2px 0 0", fontWeight: 400 }}>{detail}</span>}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
-      {busy && <p style={{ ...ui.help, margin: "10px 0 0" }}>Możesz przełączać zakładki; generacja trwa dalej. Nie zamykaj i nie odświeżaj strony.</p>}
-    </div>
+    <label style={{ display: "grid", gap: 4, fontSize: theme.size.small + 1, fontWeight: 600 }}>
+      {label}
+      <select value={value || options[0]} onChange={e => onChange(e.target.value)} disabled={disabled} style={{ ...ui.input, width: "auto", minWidth: 200 }}>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </label>
   );
 }
 
-// === Nowy scenariusz: formularz rodzaju + generacja w częściach ===
-function NewScenario({ kind, shared, prompt, author, onSaved, onActivity }) {
+function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivity, resume, onReset }) {
   const K = kindOf(kind);
   const F = FORMATS[K.format];
   const P = theme.profile[K.cel];
-  // pole osób ma od razu wartość domyślną (lek. med. Agnieszka Tomala)
-  const [inputs, setInputs] = useState(() => { const pf = K.fields.find(f => isPeopleField(K, f)); return pf ? { [pf.key]: DEFAULT_PERSON } : {}; });
-  const [model, setModel] = useState(() => { const m = lsGet("lemone_scen_model", DEFAULT_MODEL); return MODELS[m] ? m : DEFAULT_MODEL; });
-  const [webSearch, setWebSearch] = useState(K.webSearch);
-  const [depth, setDepth] = useState(isLong(K.format) ? "standard" : "szybkie");
-  const [busy, setBusy] = useState(false);
-  const [step, setStep] = useState(null);
-  const [stage, setStage] = useState(null); // klucz bieżącego kroku (okno postępu)
-  const [startedAt, setStartedAt] = useState(null);
-  const go = (key, text) => { setStage(key); setStep(text); };
-  const [error, setError] = useState(null);
-  const [costs, setCosts] = useState([]);
-  const parts = useRef({}); // wyniki udanych części (ponowienie nie powtarza ich)
-  const costsRef = useRef([]); // aktualna suma kosztu do zapisu (stan w zamknięciu generate jest nieaktualny)
+  const long = isLong(K.format);
+  const S = F.sections;
+  const d0 = resume?.data || null;
 
-  // Ochrona przed utratą pracy: rodzic wie o generacji (blokada zmiany rodzaju), przeglądarka ostrzega przy zamknięciu
-  const hasProgress = busy || !!stage;
-  useEffect(() => { onActivity && onActivity({ busy, progress: hasProgress }); }, [busy, hasProgress]); // eslint-disable-line react-hooks/exhaustive-deps
+  // --- dane formularza i ustawienia
+  const [inputs, setInputs] = useState(() => {
+    if (d0?.inputs) return d0.inputs;
+    const pf = K.fields.find(f => isPeopleField(K, f));
+    return pf ? { [pf.key]: DEFAULT_PERSON } : {};
+  });
+  const [model, setModel] = useState(() => { const m = d0?.model || lsGet("lemone_scen_model", DEFAULT_MODEL); return MODELS[m] ? m : DEFAULT_MODEL; });
+  const [webSearch, setWebSearch] = useState(d0 ? !!d0.webSearch : K.webSearch);
+  const [depth, setDepth] = useState(d0?.depth || (long ? "standard" : "szybkie"));
+  const [auto, setAuto] = useState(!!d0?.auto);
+  const [showForm, setShowForm] = useState(!d0);
+
+  // --- przebieg etapami
+  const [stages, setStages] = useState(d0?.stages || {});
+  const [choices, setChoices] = useState(d0?.choices || {});
+  const [excluded, setExcluded] = useState(d0?.excluded || []);
+  const [started, setStarted] = useState(!!d0);
+  const [busyKey, setBusyKey] = useState(null);
+  const [failedKey, setFailedKey] = useState(null);
+  const [error, setError] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [stepStart, setStepStart] = useState(null);
+  const [costs, setCosts] = useState([]);
+  const [finishing, setFinishing] = useState(false);
+  const saver = useDraftSaver("scenariusz", resume?.id || null);
+
+  // Aktualny stan dla asynchronicznych kroków (stan Reacta w zamknięciu bywa nieaktualny)
+  const R = useRef({});
+  R.current = { ...R.current, inputs, model, webSearch, depth, auto, choices, excluded };
+  if (R.current.stages === undefined) R.current.stages = stages;
+  if (R.current.own === undefined) R.current.own = d0?.own ?? null;
+  if (R.current.promptSnap === undefined) R.current.promptSnap = d0?.promptText ? { text: d0.promptText, version: d0.promptVersion || 0 } : null;
+  if (R.current.usd === undefined) R.current.usd = Number(d0?.usd) || 0;
+
+  const ORDER = [...(webSearch ? ["weryfikacja"] : []), ...(long ? ["plan", "pol1", "pol2", "pakiet"] : ["brief", "scenariusz", "pakiet"])];
+  const stageList = ORDER.map(k => ({ key: k, ...STAGE_META[k], ...(stages[k] || { versions: [] }) }));
+  const statusOf = (s) => stageStatus(s, { runningKey: busyKey, failedKey });
+  const busy = !!busyKey || finishing;
+  const allApproved = started && ORDER.every(k => stages[k]?.approved);
+  const nextKey = ORDER.find(k => !stages[k]?.approved);
+
+  // Ochrona przed utratą pracy (zakładki, zmiana rodzaju, zamknięcie strony)
+  useEffect(() => { onActivity && onActivity({ busy, progress: started }); }, [busy, started]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!busy) return undefined;
     const warn = (e) => { e.preventDefault(); e.returnValue = ""; };
@@ -431,184 +466,381 @@ function NewScenario({ kind, shared, prompt, author, onSaved, onActivity }) {
     return () => window.removeEventListener("beforeunload", warn);
   }, [busy]);
 
-  const ready = K.fields.filter(f => f.required).every(f => (inputs[f.key] || "").trim()) && prompt.loaded;
-  const track = (e) => { costsRef.current = [...costsRef.current, e]; setCosts(costsRef.current); };
-  const opts = (o) => ({ model, track, ...o });
-  // Ucięcie na limicie tokenów: jedno automatyczne ponowienie z niskim "effort" (myślenie modelu zjada limit),
-  // zamiast odsyłać użytkownika do klikania "Generuj" w kółko
+  const track = (e) => { R.current.usd += e.usd; setCosts(c => [...c, e]); };
+  const callOpts = (o) => ({ model: R.current.model, track, ...o });
   const call = async (content, o, label) => {
     try {
-      return await callModel(content, opts(o));
+      return await callModel(content, callOpts(o));
     } catch (e) {
       if (!/limicie tokenów/i.test(e.message) || o.effort === "low") throw e;
-      setStep(`${label}: odpowiedź za długa, ponawiam z krótszym przygotowaniem...`);
-      return await callModel(content, opts({ ...o, effort: "low" }));
+      setDetail(`${label}: odpowiedź za długa, ponawiam z krótszym przygotowaniem...`);
+      return await callModel(content, callOpts({ ...o, effort: "low" }));
     }
   };
   const norm = (h) => shared.normalizeDashes(stripFences(h));
-  const S = F.sections;
+  const cur = (k, st = R.current.stages) => curVersion(st[k])?.content;
 
-  const generate = async () => {
-    setBusy(true); setError(null);
-    if (!startedAt) setStartedAt(Date.now());
-    const p = parts.current;
-    try {
-      if (p.own === undefined) {
-        if ((inputs.linki || "").trim()) go("strony", "Pobieram treść naszych stron...");
-        p.own = await fetchOwnPages(inputs.linki);
-      }
-      const base = `${prompt.text}\n\n${appRules(K.format)}\n\n${inputsBlock(kind, inputs, p.own)}`;
-      if (p.research === undefined) {
-        if (webSearch) {
-          go("weryfikacja", "Szukam i czytam źródła...");
-          p.research = await callModel(
-            `${base}\n\nCZĘŚĆ 1: tylko weryfikacja. Sprawdź w aktualnych, wiarygodnych źródłach kluczowe fakty potrzebne do tego materiału${K.promptName === "scenariusz" ? " (krok 1 promptu: SPRAWDŹ PODSTAWY)" : ""}. Zwróć zwięzłą notatkę (maks. ok. ${isLong(K.format) ? 800 : 400} słów, zwykły tekst w punktach): datę weryfikacji, ustalenia z URL źródła w nawiasie przy każdym punkcie. Bez scenariusza.`,
-            opts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[depth].uses, stage: "weryfikacja" }));
-        } else {
-          p.research = null;
-        }
-      }
-      const research = p.research
-        ? `\n\nNOTATKA WERYFIKACYJNA (źródła z wyszukiwania):\n${p.research.text}`
-        : "\n\nBEZ WERYFIKACJI ONLINE: nie wymyślaj źródeł, statystyk ani badań; fakty tylko z danych i materiałów.";
-      const ctx = base + research;
+  const stageLabel = (st) => {
+    const order = ORDER;
+    const n = order.find(k => !st[k]?.approved);
+    if (!n) return `Wszystkie etapy zatwierdzone (${order.length}), do zapisu`;
+    const i = order.indexOf(n);
+    return `Etap ${i + 1} z ${order.length}: ${STAGE_META[n].label}${st[n]?.versions?.length ? (st[n].stale ? " (nieaktualny)" : " (do zatwierdzenia)") : ""}`;
+  };
+  const persist = (st = R.current.stages) => {
+    const c = R.current;
+    saver.save({
+      kind, title: (c.inputs.temat || "").trim().slice(0, 140) || "(bez tematu)", stage: stageLabel(st),
+      data: { kind, inputs: c.inputs, model: c.model, webSearch: c.webSearch, depth: c.depth, auto: c.auto, stages: st, choices: c.choices, excluded: c.excluded,
+        own: c.own, promptText: c.promptSnap?.text, promptVersion: c.promptSnap?.version, usd: c.usd },
+    });
+  };
+  const commit = (st) => { R.current.stages = st; setStages(st); };
 
-      if (isLong(K.format)) {
-        if (!p.plan) {
-          go("plan", "Piszę brief, tytuły z miniaturami i dwa warianty otwarcia...");
-          p.plan = norm(await call({ cached: ctx, text: `CZĘŚĆ 2 z 4: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}).` }, { maxTokens: 16000, effort: "medium", stage: "plan" }, "Plan"));
-        }
-        // Pełny scenariusz w dwóch połowach: cała tabela filmu 8-15 min z "myśleniem" modelu nie mieści się
-        // w jednej odpowiedzi (limit 16 tys. tokenów); gotowa pierwsza połowa nie jest powtarzana przy ponowieniu
-        if (!p.script) {
-          if (!p.half1) {
-            go("pol1", "Piszę otwarcie i pierwszą połowę tabeli scenariusza...");
-            p.half1 = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nCZĘŚĆ 3 z 4, PIERWSZA POŁOWA: zwróć <h2>${S.D}</h2> i tabelę <table> z wierszem nagłówka ${K.tableHead || F.tableHead}, obejmującą pierwszą połowę filmu: otwarcie wybrane w C i rozwinięcie do mniej więcej połowy długości z briefu. Zakończ na pełnym wierszu, bez zakończenia filmu i bez komentarzy.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz, połowa 1"));
-          }
-          go("pol2", "Piszę dalszą część i zakończenie...");
-          const half2 = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nPIERWSZA POŁOWA SEKCJI D (gotowa):\n${p.half1}\n\nCZĘŚĆ 3 z 4, DRUGA POŁOWA: zwróć WYŁĄCZNIE kolejne wiersze <tr> tej samej tabeli (bez <table>, bez wiersza nagłówka, bez <h2>), od miejsca, w którym kończy się pierwsza połowa, do końca filmu razem z zakończeniem. Kontynuuj czasy, nie powtarzaj wierszy.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz, połowa 2"));
-          p.script = joinTableHalves(p.half1, half2);
-        }
-        if (!p.pack) {
-          go("pakiet", "Piszę opis, rozdziały, kontrolę jakości i plan oceny...");
-          p.pack = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-D:\n${p.plan}\n${p.script}\n\nCZĘŚĆ 4 z 4: zwróć wyłącznie sekcje F, G i H (${S.F}, ${S.G}, ${S.H}). W G sprawdź rzeczywisty scenariusz z sekcji D.` }, { maxTokens: 16000, effort: "low", stage: "pakiet" }, "Pakiet"));
-        }
-      } else {
-        if (!p.script) {
-          go("scenariusz", "Piszę brief, warianty hooka i tabelę scenariusza...");
-          p.plan = "";
-          p.script = norm(await call({ cached: ctx, text: `CZĘŚĆ 2 z 3: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). Sekcja C to jedna tabela <table> z wierszem nagłówka ${K.tableHead || F.tableHead}.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz"));
-        }
-        if (!p.pack) {
-          go("pakiet", "Piszę opis do publikacji, kontrolę zgodności i plan oceny...");
-          p.pack = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.script}\n\nCZĘŚĆ 3 z 3: zwróć wyłącznie sekcje E, F i G (${S.E}, ${S.F}, ${S.G}). W F sprawdź rzeczywisty scenariusz z sekcji C.` }, { maxTokens: 16000, effort: "low", stage: "pakiet" }, "Publikacja"));
-        }
-      }
+  // --- treść promptów
+  const choicesBlock = () => {
+    const c = R.current.choices;
+    return long
+      ? `\n\nWYBÓR REDAKCJI (obowiązuje): tytuł i miniatura: ${c.tytul || "rekomendacja z sekcji B"}; otwarcie: ${c.otwarcie || "rekomendacja z sekcji C"}${c.wlasnyTytul ? `; tytuł roboczy wpisany przez redakcję: "${c.wlasnyTytul}"` : ""}.`
+      : `\n\nWYBÓR REDAKCJI (obowiązuje): hook: ${c.hook || "rekomendacja z sekcji B"}.`;
+  };
+  const context = () => {
+    const c = R.current;
+    const base = `${c.promptSnap.text}\n\n${appRules(K.format)}\n\n${inputsBlock(kind, c.inputs, c.own || [])}`;
+    const res = ORDER.includes("weryfikacja") ? cur("weryfikacja") : null;
+    const exc = c.excluded.length ? `\nNIE KORZYSTAJ z tych źródeł (odrzucone przez redakcję): ${c.excluded.join(", ")}` : "";
+    const research = res
+      ? `\n\nNOTATKA WERYFIKACYJNA (zatwierdzona przez redakcję):\n${res.text}${exc}`
+      : "\n\nBEZ WERYFIKACJI ONLINE: nie wymyślaj źródeł, statystyk ani badań; fakty tylko z danych i materiałów.";
+    return { base, ctx: base + research };
+  };
+  const tableHead = K.tableHead || F.tableHead;
 
-      go("zapis", "Zapisuję i otwieram do edycji...");
-      const sourcesHtml = p.research?.sources?.length
-        ? `<h2>Źródła z weryfikacji (${today()})</h2><ol>${p.research.sources.slice(0, 30).map(s => `<li><a href="${s.url.replace(/"/g, "&quot;")}" target="_blank" rel="noopener">${(s.title || s.url).replace(/</g, "&lt;")}</a></li>`).join("")}</ol>`
-        : "";
-      const html = rebuildPrompter(`${p.plan || ""}\n${p.script}\n${p.pack}\n${sourcesHtml}`, K.format);
-      const usd = costsRef.current.reduce((s, c) => s + c.usd, 0);
-      const saved = await api("/scripts", {
-        kind, title: (inputs.temat || "").trim().slice(0, 140), inputs, model, usd, promptVersion: prompt.version,
-        research: p.research ? { text: p.research.text, sources: p.research.sources } : null, html, by: author,
-      });
-      parts.current = {};
-      costsRef.current = [];
-      setCosts([]); setStage(null); setStartedAt(null);
-      onSaved(saved.id);
-    } catch (e) {
-      setError(`${e.message}. Kliknij ponownie „Generuj scenariusz”: gotowe części nie zostaną powtórzone.`);
-    }
-    setBusy(false); setStep(null);
+  const generators = {
+    weryfikacja: async (r, prev) => {
+      const { base } = context();
+      const out = await callModel(
+        `${base}\n\nCZĘŚĆ 1: tylko weryfikacja. Sprawdź w aktualnych, wiarygodnych źródłach kluczowe fakty potrzebne do tego materiału${K.promptName === "scenariusz" ? " (krok 1 promptu: SPRAWDŹ PODSTAWY)" : ""}. Zwróć zwięzłą notatkę (maks. ok. ${long ? 800 : 400} słów, zwykły tekst w punktach): datę weryfikacji, ustalenia z URL źródła w nawiasie przy każdym punkcie. Bez scenariusza.${regenNote(r, prev?.text)}`,
+        callOpts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[R.current.depth].uses, stage: "weryfikacja" }));
+      return { text: shared.normalizeDashes(out.text), sources: out.sources || [] };
+    },
+    plan: async (r, prev) => norm(await call({ cached: context().ctx, text: `CZĘŚĆ: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). W sekcji B ponumeruj zestawy jako "Zestaw 1", "Zestaw 2", "Zestaw 3"; w sekcji C warianty jako "Wariant 1" i "Wariant 2"; przy każdej sekcji wskaż rekomendację.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "plan" }, "Plan")),
+    pol1: async (r, prev) => norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-C:\n${cur("plan")}${choicesBlock()}\n\nCZĘŚĆ: PIERWSZA POŁOWA SCENARIUSZA. Zwróć <h2>${S.D}</h2> i tabelę <table> z wierszem nagłówka ${tableHead}, obejmującą pierwszą połowę filmu: wybrane otwarcie i rozwinięcie do mniej więcej połowy długości z briefu. Zakończ na pełnym wierszu, bez zakończenia filmu i bez komentarzy.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Pierwsza połowa")),
+    pol2: async (r, prev) => {
+      const rows = norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-C:\n${cur("plan")}${choicesBlock()}\n\nZATWIERDZONA PIERWSZA POŁOWA SEKCJI D:\n${cur("pol1")}\n\nCZĘŚĆ: DRUGA POŁOWA. Zwróć WYŁĄCZNIE kolejne wiersze <tr> tej samej tabeli (bez <table>, bez wiersza nagłówka, bez <h2>), od miejsca, w którym kończy się pierwsza połowa, do końca filmu razem z zakończeniem. Kontynuuj czasy, nie powtarzaj wierszy.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Druga połowa"));
+      const trs = (rows.match(/<tr[\s\S]*?<\/tr>/gi) || []).filter(x => !/<th[\s>]/i.test(x)).join("\n");
+      if (!trs) throw new Error("druga połowa nie zawiera wierszy tabeli");
+      return `<table><thead><tr>${tableHead}</tr></thead><tbody>${trs}</tbody></table>`;
+    },
+    brief: async (r, prev) => norm(await call({ cached: context().ctx, text: `CZĘŚĆ: zwróć wyłącznie sekcje A i B (${S.A}, ${S.B}). W sekcji B ponumeruj warianty jako "Wariant 1", "Wariant 2", "Wariant 3" i wskaż rekomendację.${regenNote(r, prev)}` }, { maxTokens: 12000, effort: "medium", stage: "plan" }, "Brief")),
+    scenariusz: async (r, prev) => norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-B:\n${cur("brief")}${choicesBlock()}\n\nCZĘŚĆ: zwróć wyłącznie sekcję C: <h2>${S.C}</h2> i jedną tabelę <table> z wierszem nagłówka ${tableHead}. Zrealizuj wybrany hook.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz")),
+    pakiet: async (r, prev) => {
+      const body = long
+        ? `ZATWIERDZONE SEKCJE A-D:\n${cur("plan")}\n${joinTableHalves(cur("pol1"), cur("pol2"))}`
+        : `ZATWIERDZONE SEKCJE A-C:\n${cur("brief")}\n${cur("scenariusz")}`;
+      const ask = long
+        ? `CZĘŚĆ: zwróć wyłącznie sekcje F, G i H (${S.F}, ${S.G}, ${S.H}). W G sprawdź rzeczywisty scenariusz z sekcji D.`
+        : `CZĘŚĆ: zwróć wyłącznie sekcje E, F i G (${S.E}, ${S.F}, ${S.G}). W F sprawdź rzeczywisty scenariusz z sekcji C.`;
+      return norm(await call({ cached: context().ctx, text: `${body}${choicesBlock()}\n\n${ask}${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "low", stage: "pakiet" }, "Pakiet"));
+    },
   };
 
-  const set = (k, v) => { setInputs({ ...inputs, [k]: v }); parts.current = {}; setStage(null); setStartedAt(null); setError(null); };
+  // --- jeden etap: generacja (pierwsza albo ponowna z uwagami)
+  const runStage = async (key, regen) => {
+    setBusyKey(key); setFailedKey(null); setError(null); setDetail(null); setStepStart(Date.now()); setSelected(key);
+    const usdBefore = R.current.usd;
+    try {
+      const prev = regen?.mode === "popraw" ? cur(key) : null;
+      const content = await generators[key](regen, prev);
+      const st = pushVersion(R.current.stages, key, { content, at: new Date().toISOString(), by: author, usd: R.current.usd - usdBefore, uwagi: regen?.uwagi || "", source: "model" }, ORDER);
+      commit(st);
+      persist(st);
+      setBusyKey(null);
+      return true;
+    } catch (e) {
+      setBusyKey(null); setFailedKey(key);
+      setError(`${STAGE_META[key].label}: ${e.message}`);
+      persist();
+      return false;
+    }
+  };
 
-  // Lista kroków tego rodzaju; "gotowe" wynika z zapisanych części (ponowienie ich nie powtarza)
-  const pc = parts.current;
-  const steps = [
-    ...((inputs.linki || "").trim() ? [{ key: "strony", label: "Treść naszych stron", hint: "kilka sekund", done: pc.own !== undefined }] : []),
-    ...(webSearch ? [{ key: "weryfikacja", label: "Weryfikacja w źródłach", hint: "ok. 1 min", done: !!pc.research }] : []),
-    ...(isLong(K.format) ? [
-      { key: "plan", label: "Brief, tytuły i otwarcia (A-C)", hint: "ok. 1 min", done: !!pc.plan },
-      { key: "pol1", label: "Pełny scenariusz: pierwsza połowa", hint: "1-2 min", done: !!pc.half1 || !!pc.script },
-      { key: "pol2", label: "Pełny scenariusz: druga połowa", hint: "1-2 min", done: !!pc.script },
-      { key: "pakiet", label: "Pakiet publikacyjny, kontrola, plan oceny (F-H)", hint: "ok. 1 min", done: !!pc.pack },
-    ] : [
-      { key: "scenariusz", label: "Brief, hooki i scenariusz (A-C)", hint: "ok. 1 min", done: !!pc.script },
-      { key: "pakiet", label: "Publikacja, kontrola, plan oceny (E-G)", hint: "kilkadziesiąt sekund", done: !!pc.pack },
-    ]),
-    { key: "zapis", label: "Zapis i otwarcie do edycji", hint: "kilka sekund", done: false },
-  ];
+  // Po zatwierdzeniu: następny etap bez wyniku generuje się sam; w trybie bez zatwierdzania idzie dalej do końca
+  const advance = async () => {
+    for (;;) {
+      const st = R.current.stages;
+      const n = ORDER.find(k => !st[k]?.approved);
+      if (!n) { if (R.current.auto) await finish(); else setSelected(null); return; }
+      if (!st[n]?.versions?.length) {
+        const ok = await runStage(n);
+        if (!ok) return;
+      } else {
+        setSelected(n);
+        if (!R.current.auto || st[n].stale) return;
+      }
+      if (!R.current.auto) return;
+      const a = approveStage(R.current.stages, n);
+      commit(a); persist(a);
+    }
+  };
+
+  const start = async () => {
+    setError(null);
+    R.current.promptSnap = { text: prompt.text, version: prompt.version };
+    setStarted(true); setShowForm(false);
+    if (R.current.own == null) {
+      if ((inputs.linki || "").trim()) { setBusyKey(ORDER[0]); setDetail("Pobieram treść naszych stron..."); }
+      try { R.current.own = await fetchOwnPages(inputs.linki); }
+      catch (e) { setBusyKey(null); setError(e.message); setStarted(false); setShowForm(true); return; }
+      setBusyKey(null);
+    }
+    await advance();
+  };
+
+  const approve = async (key) => {
+    const st = approveStage(R.current.stages, key);
+    commit(st); persist(st);
+    await advance();
+  };
+  const regenerate = async (key, r) => { await runStage(key, r); if (R.current.auto) await advance(); };
+  const edit = (key, value) => {
+    const prevC = cur(key);
+    const content = key === "weryfikacja" ? { ...prevC, text: shared.normalizeDashes(value) } : shared.normalizeDashes(value);
+    const st = pushVersion(R.current.stages, key, { content, at: new Date().toISOString(), by: author, usd: 0, uwagi: "", source: "edycja" }, ORDER);
+    commit(st); persist(st);
+  };
+  const pick = (key, i) => { const st = pickVersion(R.current.stages, key, i, ORDER); commit(st); persist(st); };
+  // Zmiana wyboru (tytuł, otwarcie, hook, źródła): dalsze etapy z wynikiem stają się nieaktualne
+  const markStaleAfter = (key) => {
+    const idx = ORDER.indexOf(key);
+    const st = { ...R.current.stages };
+    ORDER.slice(idx + 1).forEach(k => { if (st[k]?.versions?.length) st[k] = { ...st[k], approved: false, stale: true }; });
+    commit(st); return st;
+  };
+  const setChoice = (k, v, afterKey) => {
+    const c = { ...R.current.choices, [k]: v };
+    R.current.choices = c; setChoices(c);
+    persist(markStaleAfter(afterKey));
+  };
+  const toggleSource = (url) => {
+    const ex = R.current.excluded.includes(url) ? R.current.excluded.filter(u => u !== url) : [...R.current.excluded, url];
+    R.current.excluded = ex; setExcluded(ex);
+    persist(markStaleAfter("weryfikacja"));
+  };
+
+  // --- zapis gotowego scenariusza
+  const finish = async () => {
+    setFinishing(true); setError(null);
+    try {
+      const res = ORDER.includes("weryfikacja") ? cur("weryfikacja") : null;
+      const sources = (res?.sources || []).filter(s => !R.current.excluded.includes(s.url));
+      const sourcesHtml = sources.length
+        ? `<h2>Źródła z weryfikacji (${today()})</h2><ol>${sources.slice(0, 30).map(s => `<li><a href="${s.url.replace(/"/g, "&quot;")}" target="_blank" rel="noopener">${(s.title || s.url).replace(/</g, "&lt;")}</a></li>`).join("")}</ol>`
+        : "";
+      const body = long
+        ? `${cur("plan")}\n${joinTableHalves(cur("pol1"), cur("pol2"))}\n${cur("pakiet")}`
+        : `${cur("brief")}\n${cur("scenariusz")}\n${cur("pakiet")}`;
+      const html = rebuildPrompter(`${body}\n${sourcesHtml}`, K.format);
+      const c = R.current;
+      const saved = await api("/scripts", {
+        kind, title: (c.inputs.temat || "").trim().slice(0, 140), inputs: c.inputs, model: c.model, usd: c.usd, promptVersion: c.promptSnap?.version || 0,
+        research: res ? { text: res.text, sources } : null, html, by: author,
+      });
+      await saver.remove();
+      setFinishing(false);
+      onSaved(saved.id);
+    } catch (e) {
+      setFinishing(false);
+      setError(`Zapis scenariusza: ${e.message}`);
+    }
+  };
+
+  // --- dane formularza po starcie: zmiana unieważnia wszystkie etapy
+  const set = (k, v) => {
+    const next = { ...inputs, [k]: v };
+    R.current.inputs = next; setInputs(next);
+    if (started) {
+      if (k === "linki") R.current.own = null;
+      const st = { ...R.current.stages };
+      ORDER.forEach(x => { if (st[x]?.versions?.length) st[x] = { ...st[x], approved: false, stale: true }; });
+      commit(st);
+    }
+  };
+  const ready = K.fields.filter(f => f.required).every(f => (inputs[f.key] || "").trim()) && prompt.loaded;
+  const discard = async () => {
+    if (!window.confirm("Porzucić ten szkic? Zniknie z listy „W toku” (admin może go odzyskać z kosza).")) return;
+    await saver.remove();
+    onReset();
+  };
+
+  const shownKey = selected || (busyKey) || nextKey;
+  const shown = shownKey ? stageList.find(s => s.key === shownKey) : null;
+  const sources = cur("weryfikacja", stages)?.sources || [];
+
+  const choiceBox = shown && !busy && (
+    shown.key === "plan" ? (
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end", marginTop: 12, padding: 12, borderRadius: theme.radius.control, background: P.soft }}>
+        <ChoiceSelect label="Tytuł i miniatura" value={choices.tytul} options={CHOICE_OPTS.tytul} onChange={v => setChoice("tytul", v, "plan")} />
+        <ChoiceSelect label="Otwarcie" value={choices.otwarcie} options={CHOICE_OPTS.otwarcie} onChange={v => setChoice("otwarcie", v, "plan")} />
+        <label style={{ display: "grid", gap: 4, fontSize: theme.size.small + 1, fontWeight: 600, flex: "1 1 220px" }}>
+          Własny tytuł roboczy (opcjonalnie)
+          <input value={choices.wlasnyTytul || ""} onChange={e => { const c = { ...R.current.choices, wlasnyTytul: e.target.value }; R.current.choices = c; setChoices(c); }}
+            onBlur={() => persist(markStaleAfter("plan"))} style={ui.input} placeholder="nadpisuje wybrany zestaw" />
+        </label>
+      </div>
+    ) : shown.key === "brief" ? (
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 12, padding: 12, borderRadius: theme.radius.control, background: P.soft }}>
+        <ChoiceSelect label="Hook do scenariusza" value={choices.hook} options={CHOICE_OPTS.hook} onChange={v => setChoice("hook", v, "brief")} />
+      </div>
+    ) : shown.key === "weryfikacja" && sources.length ? (
+      <div style={{ marginTop: 12 }}>
+        <label style={ui.label}>Źródła ({sources.length - excluded.filter(u => sources.some(s => s.url === u)).length} z {sources.length} w użyciu); odznacz te, których nie chcesz</label>
+        <div style={{ display: "grid", gap: 4, maxHeight: 220, overflow: "auto" }} className="scroll-thin">
+          {sources.map(s => (
+            <label key={s.url} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: theme.size.small + 1 }}>
+              <input type="checkbox" checked={!excluded.includes(s.url)} onChange={() => toggleSource(s.url)} style={{ marginTop: 3 }} />
+              <a href={s.url} target="_blank" rel="noreferrer" style={{ color: theme.color.text }}>{s.title || s.url}</a>
+            </label>
+          ))}
+        </div>
+      </div>
+    ) : null
+  );
 
   return (
-    <div style={ui.card}>
-      <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 4px", fontFamily: theme.font.heading }}>{K.label}</h2>
-      <p style={{ fontSize: theme.size.body, color: theme.color.textSecondary, margin: "0 0 8px", maxWidth: 760 }}>{K.opis}</p>
-      {K.spec && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-          <span style={ui.pill(P.soft, theme.color.text)}>{GROUPS[K.group]}</span>
-          <span style={ui.pill(theme.color.bg, theme.color.text)}>Proporcje: {K.spec.proporcje}</span>
-          <span style={ui.pill(theme.color.bg, theme.color.text)}>Długość: {K.spec.dlugosc}</span>
-          <span style={ui.pill(theme.color.bg, theme.color.text)}>Gdzie: {K.spec.platformy}</span>
+    <div style={{ display: "grid", gap: theme.space(2) }}>
+      <div style={ui.card}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 4px", fontFamily: theme.font.heading }}>{K.label}{started && inputs.temat ? `: ${inputs.temat.slice(0, 80)}` : ""}</h2>
+            <p style={{ fontSize: theme.size.body, color: theme.color.textSecondary, margin: "0 0 8px", maxWidth: 760 }}>{K.opis}</p>
+          </div>
+          {started && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <DraftStatus saver={saver} />
+              <button onClick={() => setShowForm(!showForm)} style={{ ...ui.btnSecondary, padding: "5px 10px" }}>{showForm ? "Ukryj dane" : "Pokaż dane"}</button>
+              <button onClick={discard} disabled={busy} style={{ ...ui.btnSecondary, padding: "5px 10px", ...(busy ? ui.btnDisabled : {}) }}>Porzuć szkic</button>
+            </div>
+          )}
+        </div>
+        {K.spec && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            <span style={ui.pill(P.soft, theme.color.text)}>{GROUPS[K.group]}</span>
+            <span style={ui.pill(theme.color.bg, theme.color.text)}>Proporcje: {K.spec.proporcje}</span>
+            <span style={ui.pill(theme.color.bg, theme.color.text)}>Długość: {K.spec.dlugosc}</span>
+            <span style={ui.pill(theme.color.bg, theme.color.text)}>Gdzie: {K.spec.platformy}</span>
+          </div>
+        )}
+        {showForm && (
+          <>
+            <p style={{ ...ui.help, marginTop: 0 }}>
+              Wynik: {Object.values(F.sections).map(x => x.replace(/^[A-H]\. /, "").toLowerCase()).join(", ")}. Pola wymagane oznaczono gwiazdką, reszta ma wartości domyślne.
+              {started ? " Zmiana danych oznaczy gotowe etapy jako nieaktualne." : ""}
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: theme.space(2) }}>
+              {K.fields.map(f => (
+                <div key={f.key} style={f.rows > 2 || isPeopleField(K, f) ? { gridColumn: "1 / -1" } : undefined}>
+                  <label style={ui.label}>{isPeopleField(K, f) ? <><Users size={12} style={{ verticalAlign: "-1px" }} /> Kto wystąpi w nagraniu</> : f.label}{f.required ? " *" : ""}</label>
+                  {isPeopleField(K, f) ? (
+                    <PeoplePicker value={inputs[f.key]} onChange={v => set(f.key, v)} disabled={busy} profile={P} />
+                  ) : f.rows ? (
+                    <textarea value={inputs[f.key] || ""} onChange={e => set(f.key, e.target.value)} rows={f.rows} disabled={busy}
+                      style={{ ...ui.input, resize: "vertical" }} placeholder={f.placeholder || ""} />
+                  ) : (
+                    <input value={inputs[f.key] || ""} onChange={e => set(f.key, e.target.value)} disabled={busy}
+                      style={ui.input} placeholder={f.placeholder || ""} />
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: theme.space(2) }}>
+          <select value={model} onChange={e => { setModel(e.target.value); R.current.model = e.target.value; lsSet("lemone_scen_model", e.target.value); }} style={{ ...ui.input, width: "auto" }} disabled={busy}
+            title="Model można zmienić także między etapami (np. tańszy do poprawek)">
+            {Object.entries(MODELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: theme.size.small + 1, cursor: started ? "default" : "pointer" }}>
+            <input type="checkbox" checked={webSearch} onChange={e => setWebSearch(e.target.checked)} disabled={started} /> Weryfikacja w źródłach (web search)
+          </label>
+          {webSearch && (
+            <select value={depth} onChange={e => setDepth(e.target.value)} style={{ ...ui.input, width: "auto" }} disabled={busy}>
+              {Object.entries(SEARCH_DEPTH).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+          )}
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: theme.size.small + 1, cursor: "pointer" }}
+            title="Wszystkie etapy jeden po drugim, bez zatrzymywania (jak przed v4.17)">
+            <input type="checkbox" checked={auto} onChange={e => { setAuto(e.target.checked); R.current.auto = e.target.checked; }} disabled={busy} /> Bez zatwierdzania (wszystkie etapy od razu)
+          </label>
+          <div style={{ flex: 1 }} />
+          {!started && (
+            <button onClick={start} disabled={!ready || busy} style={{ ...ui.btnPrimary(P), ...(!ready || busy ? ui.btnDisabled : {}) }}>
+              {busy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} {auto ? "Generuj scenariusz" : "Rozpocznij: pierwszy etap"}
+            </button>
+          )}
+          {started && auto && !busy && !allApproved && nextKey && (
+            <button onClick={advance} style={ui.btnPrimary(P)}><Sparkles size={14} /> Kontynuuj bez zatwierdzania</button>
+          )}
+        </div>
+      </div>
+
+      {started && (
+        <StageStepper stages={stageList} statusOf={statusOf} selected={shownKey} onSelect={setSelected}
+          usd={R.current.usd} startedAt={stepStart} busy={!!busyKey} profile={P} />
+      )}
+
+      {busyKey && (
+        <div style={{ ...ui.card, display: "flex", gap: 10, alignItems: "center" }}>
+          <Loader2 size={16} className="spin" color={P.accentHover} />
+          <span style={{ fontSize: theme.size.body }}><strong>{STAGE_META[busyKey].label}</strong>{detail ? `: ${detail}` : "..."} Możesz przełączać zakładki; nie zamykaj strony.</span>
         </div>
       )}
-      <p style={{ ...ui.help, marginTop: 0 }}>
-        Wynik: {Object.values(F.sections).map(x => x.replace(/^[A-H]\. /, "").toLowerCase()).join(", ")}. Pola wymagane oznaczono gwiazdką, reszta ma wartości domyślne.
-      </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: theme.space(2) }}>
-        {K.fields.map(f => (
-          <div key={f.key} style={f.rows > 2 || isPeopleField(K, f) ? { gridColumn: "1 / -1" } : undefined}>
-            <label style={ui.label}>{isPeopleField(K, f) ? <><Users size={12} style={{ verticalAlign: "-1px" }} /> Kto wystąpi w nagraniu</> : f.label}{f.required ? " *" : ""}</label>
-            {isPeopleField(K, f) ? (
-              <PeoplePicker value={inputs[f.key]} onChange={v => set(f.key, v)} disabled={busy} profile={P} />
-            ) : f.rows ? (
-              <textarea value={inputs[f.key] || ""} onChange={e => set(f.key, e.target.value)} rows={f.rows} disabled={busy}
-                style={{ ...ui.input, resize: "vertical" }} placeholder={f.placeholder || ""} />
-            ) : (
-              <input value={inputs[f.key] || ""} onChange={e => set(f.key, e.target.value)} disabled={busy}
-                style={ui.input} placeholder={f.placeholder || ""} />
-            )}
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: theme.space(2) }}>
-        <select value={model} onChange={e => { setModel(e.target.value); lsSet("lemone_scen_model", e.target.value); }} style={{ ...ui.input, width: "auto" }} disabled={busy}>
-          {Object.entries(MODELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-        </select>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: theme.size.small + 1, cursor: "pointer" }}>
-          <input type="checkbox" checked={webSearch} onChange={e => setWebSearch(e.target.checked)} disabled={busy} /> Weryfikacja w źródłach (web search)
-        </label>
-        {webSearch && (
-          <select value={depth} onChange={e => setDepth(e.target.value)} style={{ ...ui.input, width: "auto" }} disabled={busy}>
-            {Object.entries(SEARCH_DEPTH).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-          </select>
-        )}
-        <div style={{ flex: 1 }} />
-        <button onClick={generate} disabled={!ready || busy} style={{ ...ui.btnPrimary(P), ...(!ready || busy ? ui.btnDisabled : {}) }}>
-          {busy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />} Generuj scenariusz
-        </button>
-      </div>
-      {(busy || error) && stage && (
-        <ProgressPanel steps={steps} stage={stage} busy={busy} failed={!!error && !busy} detail={step} startedAt={startedAt}
-          usd={costs.reduce((sum, c) => sum + c.usd, 0)} profile={P} />
+      {error && (
+        <div style={ui.banner("danger")}>
+          <AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}
+          {failedKey && (
+            <div style={{ marginTop: 8 }}>
+              <button onClick={async () => { const ok = await runStage(failedKey); if (ok && R.current.auto) await advance(); }} disabled={busy} style={ui.btnSecondary}><RefreshCw size={13} /> Ponów ten etap</button>
+            </div>
+          )}
+        </div>
       )}
-      {error && <div style={{ ...ui.banner("danger"), marginTop: 10 }}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
-      <CostMeter costs={costs} />
-      <p style={ui.help}>{isLong(K.format) ? "Scenariusz filmu powstaje w kilka minut (pełny scenariusz w dwóch połowach)." : "Scenariusz powstaje w 1-2 minuty."} Scenariusz zapisuje się automatycznie i otwiera do edycji.</p>
+
+      {shown && !busyKey && shown.versions?.length > 0 && (
+        <StageCard stage={shown} status={statusOf(shown)} kind={shown.key === "weryfikacja" ? "text" : "html"} busy={busy} profile={P}
+          approveLabel={ORDER.indexOf(shown.key) === ORDER.length - 1 ? "Zatwierdź" : "Zatwierdź i dalej"}
+          onApprove={() => approve(shown.key)} onRegenerate={(r) => regenerate(shown.key, r)} onEdit={(v) => edit(shown.key, v)} onPickVersion={(i) => pick(shown.key, i)}
+          note={shown.key === "pol2" ? <p style={{ ...ui.help, marginTop: 0 }}>Druga połowa dołączy do tabeli z pierwszej połowy; tekst do promptera powstanie z obu.</p> : null}>
+          {choiceBox}
+        </StageCard>
+      )}
+
+      {allApproved && !busyKey && (
+        <div style={{ ...ui.card, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", borderColor: P.accent }}>
+          <CheckCircle2 size={18} color={P.accentHover} />
+          <span style={{ flex: 1, minWidth: 240, fontSize: theme.size.body }}>Wszystkie etapy zatwierdzone. Zapis złoży scenariusz w całość, doda tekst do promptera{sources.length ? " i listę źródeł" : ""} i otworzy go do edycji; szkic zniknie z listy „W toku”.</span>
+          <button onClick={finish} disabled={finishing} style={{ ...ui.btnPrimary(P), ...(finishing ? ui.btnDisabled : {}) }}>
+            {finishing ? <Loader2 size={14} className="spin" /> : <Save size={14} />} Zapisz scenariusz
+          </button>
+        </div>
+      )}
+
+      {costs.length > 0 && <CostMeter costs={costs} note={d0?.usd ? `wcześniej w tym szkicu: ${usdFmt(d0.usd)} USD` : ""} />}
     </div>
   );
 }
 
 // === Lista scenariuszy (wszystkie rodzaje): szukanie, filtr autora i rodzaju, sortowanie, usuwanie ===
-function ScriptList({ onOpen, session }) {
+function ScriptList({ onOpen, session, onResume }) {
   const [items, setItems] = useState(null);
+  const [drafts, setDrafts] = useState([]);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
-  const load = async () => { setError(null); try { setItems((await api("/scripts")).items); } catch (e) { setError(e.message); } };
+  const load = async () => {
+    setError(null);
+    try { setItems((await api("/scripts")).items); } catch (e) { setError(e.message); }
+    try { setDrafts(await listDrafts("scenariusz")); } catch (e) { /* lista szkiców opcjonalna */ }
+  };
   useEffect(() => { load(); }, []);
   const byKind = (items || []).filter(it => !filter || (it.kind || "lekarz-yt") === filter);
   const reg = useRegistry(byKind, it => [kindOf(it.kind).label]);
@@ -626,6 +858,19 @@ function ScriptList({ onOpen, session }) {
         <div style={{ flex: 1 }} />
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
       </div>
+      {drafts.length > 0 && (
+        <div style={{ marginBottom: theme.space(2), padding: 12, borderRadius: theme.radius.control, background: theme.color.warningSoft }}>
+          <div style={{ fontWeight: 600, marginBottom: 8, fontFamily: theme.font.heading }}>W toku: {drafts.length} {drafts.length === 1 ? "szkic" : "szkice"} do dokończenia</div>
+          {drafts.map(d => (
+            <RegistryRow key={d.id} onOpen={() => onResume(d.id)} deleteLabel={d.title || "szkic"}
+              onDelete={session && (session.role === "admin" || session.email === d.author) ? async () => { await deleteDraft(d.id); setDrafts(x => x.filter(y => y.id !== d.id)); } : null}
+              right="Wznów">
+              <div style={{ fontWeight: 600 }}>{d.title || "(bez tematu)"}</div>
+              <div style={{ ...ui.help, margin: "3px 0 0" }}>{kindOf(d.kind).label} · {d.stage} · {d.author}{d.updatedBy && d.updatedBy !== d.author ? `, ostatnio ${d.updatedBy}` : ""} · {fmt(d.updatedAt)}</div>
+            </RegistryRow>
+          ))}
+        </div>
+      )}
       <RegistryToolbar reg={reg} placeholder="Szukaj: tytuł, autor, rodzaj">
         <KindSelect value={filter} onChange={setFilter} withAll />
       </RegistryToolbar>
