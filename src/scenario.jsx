@@ -105,7 +105,7 @@ export const KINDS = {
       : "Rolka pionowa nagrywana telefonem przez zespół: hook w pierwszych sekundach, jeden przekaz, napisy na każdej scenie.",
   }])),
 };
-const kindOf = (k) => KINDS[k] || KINDS["lekarz-yt"];
+export const kindOf = (k) => KINDS[k] || KINDS["lekarz-yt"];
 
 function lsGet(key, fallback = "") {
   try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; }
@@ -890,7 +890,7 @@ function ScriptList({ onOpen, session, onResume }) {
 }
 
 // === Edycja scenariusza: podgląd edytowalny albo kod HTML, wersje ===
-function ScriptEditor({ id, shared, author, onBack }) {
+export function ScriptEditor({ id, shared, author, onBack }) {
   const [x, setX] = useState(null);
   const [error, setError] = useState(null);
   const [mode, setMode] = useState("preview");

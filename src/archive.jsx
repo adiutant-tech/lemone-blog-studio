@@ -1,5 +1,6 @@
-// === Lemoné Blog Studio v4.4 - Archiwum artykułów (tylko admin) ===
-// Generator zapisuje każdy gotowy artykuł automatycznie (Worker /articles, KV).
+// === Lemoné Writer - Rejestr artykułów i scenariuszy (tylko admin) ===
+// v4.18: jedna lista dla artykułów (Worker /articles, po akceptacji autora) i scenariuszy (/scripts),
+// z filtrem rodzaju; scenariusz otwiera się w tym samym edytorze, co w zakładce Scenariusz.
 // Admin widzi wszystkie artykuły, edytuje je w podglądzie albo w kodzie HTML
 // (każdy zapis = nowa wersja z jego podpisem), kopiuje i pobiera .html.
 // Rola admin jest sprawdzana w Workerze; edytor nie dostanie danych nawet z pominięciem UI.
@@ -9,6 +10,7 @@ import { Archive as ArchiveIcon, ArrowLeft, Loader2, AlertCircle, RefreshCw, Sav
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
 import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
+import { ScriptEditor, kindOf } from "./scenario.jsx";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 const TYP_LABEL = { edukacyjny: "Edukacyjny", lifestylowy: "Lifestylowy", ranking: "Ranking (szkic)", klinika: "Klinika", formatowanie: "Formatowanie" };
@@ -24,55 +26,85 @@ async function api(path, body) {
   return j;
 }
 
-export default function ArchiveModule({ shared }) {
-  const [openId, setOpenId] = useState(null);
-  return openId
-    ? <ArticleDetail key={openId} id={openId} shared={shared} onBack={() => setOpenId(null)} />
-    : <ArticleList onOpen={setOpenId} />;
+const RODZAJ = { artykul: "Artykuł", scenariusz: "Scenariusz" };
+// Odmiana liczebników: 1 artykuł, 2-4 artykuły, 5+ artykułów (12-14 zawsze trzecia forma)
+const plural = (n, one, few, many) => n === 1 ? one : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) ? few : many;
+const ile = (n, forms) => `${n} ${plural(n, ...forms)}`;
+const typeLabel = (it) => it.rodzaj === "scenariusz" ? kindOf(it.kind).label : (TYP_LABEL[it.typ] || it.typ);
+
+export default function ArchiveModule({ shared, session }) {
+  const [open, setOpen] = useState(null); // {rodzaj, id}
+  const [filter, setFilter] = useState(""); // filtr rodzaju zostaje po powrocie z podglądu
+  if (open?.rodzaj === "scenariusz") {
+    return <ScriptEditor key={open.id} id={open.id} shared={shared} author={session?.email || ""} onBack={() => setOpen(null)} />;
+  }
+  return open
+    ? <ArticleDetail key={open.id} id={open.id} shared={shared} onBack={() => setOpen(null)} />
+    : <RegistryList onOpen={setOpen} filter={filter} setFilter={setFilter} />;
 }
 
-function ArticleList({ onOpen }) {
+function RegistryList({ onOpen, filter, setFilter }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
-  const reg = useRegistry(items, it => [TYP_LABEL[it.typ] || it.typ, it.acceptedBy]);
+  const byKind = (items || []).filter(it => !filter || it.rodzaj === filter);
+  const reg = useRegistry(byKind, it => [typeLabel(it), RODZAJ[it.rodzaj], it.acceptedBy]);
 
   const load = async () => {
     setError(null);
-    try { setItems((await api("/articles")).items); } catch (e) { setError(e.message); }
+    try {
+      const [a, s] = await Promise.all([api("/articles"), api("/scripts")]);
+      setItems([
+        ...a.items.map(x => ({ ...x, rodzaj: "artykul" })),
+        ...s.items.map(x => ({ ...x, rodzaj: "scenariusz" })),
+      ]);
+    } catch (e) { setError(e.message); }
   };
   useEffect(() => { load(); }, []);
 
   // usunięcie do kosza; z listy znika od razu (lista KV odświeża się z opóźnieniem)
-  const remove = async (id) => {
-    await api(`/articles/${id}`, { action: "delete" });
-    setItems(prev => prev.filter(x => x.id !== id));
+  const remove = async (it) => {
+    await api(`/${it.rodzaj === "scenariusz" ? "scripts" : "articles"}/${it.id}`, { action: "delete" });
+    setItems(prev => prev.filter(x => !(x.id === it.id && x.rodzaj === it.rodzaj)));
   };
 
   const shown = reg.shown;
   const total = shown.reduce((s, it) => s + (Number(it.usd) || 0), 0);
+  const count = (r) => (items || []).filter(it => it.rodzaj === r).length;
 
   return (
     <div className="fade-in" style={ui.card}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: theme.space(2) }}>
         <ArchiveIcon size={16} color={theme.color.accentHover} />
-        <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Rejestr artykułów</h2>
+        <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Rejestr</h2>
         <div style={{ flex: 1 }} />
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
       </div>
-      <RegistryToolbar reg={reg} placeholder="Szukaj: tytuł, autor, typ" />
+      <RegistryToolbar reg={reg} placeholder="Szukaj: tytuł, autor, typ">
+        <select value={filter} onChange={e => setFilter(e.target.value)} style={{ ...ui.input, width: "auto" }} aria-label="Rodzaj">
+          <option value="">Artykuły i scenariusze</option>
+          <option value="artykul">Tylko artykuły ({count("artykul")})</option>
+          <option value="scenariusz">Tylko scenariusze ({count("scenariusz")})</option>
+        </select>
+      </RegistryToolbar>
       {error && <div style={ui.banner("danger")}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
       {!items && !error && <p style={ui.help}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> Wczytuję...</p>}
       {items && (
         <p style={{ ...ui.help, marginTop: 0 }}>
-          {shown.length} z {items.length} artykułów{reg.filtered ? " (filtr)" : ""} · łączny koszt generacji: {usd(total)} USD
+          {shown.length} z {ile(items.length, ["pozycji", "pozycji", "pozycji"])} ({ile(count("artykul"), ["artykuł", "artykuły", "artykułów"])}, {ile(count("scenariusz"), ["scenariusz", "scenariusze", "scenariuszy"])}){reg.filtered || filter ? " (filtr)" : ""} · łączny koszt generacji widocznych: {usd(total)} USD
         </p>
       )}
-      {items && shown.length === 0 && <p style={ui.help}>{reg.filtered ? "Nic nie pasuje do filtra." : "Brak artykułów. Rejestr wypełnia się po akceptacji artykułu."}</p>}
+      {items && shown.length === 0 && <p style={ui.help}>{reg.filtered || filter ? "Nic nie pasuje do filtra." : "Rejestr jest pusty. Artykuły trafiają tu po akceptacji, scenariusze po zapisie."}</p>}
       {shown.map(it => (
-        <RegistryRow key={it.id} onOpen={() => onOpen(it.id)} onDelete={() => remove(it.id)} deleteLabel={it.title || "artykuł bez tytułu"} right={`${usd(it.usd)} USD`}>
-          <div style={{ fontWeight: 600, fontSize: theme.size.body }}>{it.title || "(bez tytułu)"}</div>
+        <RegistryRow key={`${it.rodzaj}:${it.id}`} onOpen={() => onOpen({ rodzaj: it.rodzaj, id: it.id })} onDelete={() => remove(it)}
+          deleteLabel={it.title || (it.rodzaj === "scenariusz" ? "scenariusz bez tematu" : "artykuł bez tytułu")} right={`${usd(it.usd)} USD`}>
+          <div style={{ fontWeight: 600, fontSize: theme.size.body, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={ui.pill(it.rodzaj === "scenariusz" ? theme.color.warningSoft : theme.color.accentSoft, theme.color.text)}>{RODZAJ[it.rodzaj]}</span>
+            {it.title || "(bez tytułu)"}
+          </div>
           <div style={{ ...ui.help, margin: "3px 0 0" }}>
-            {TYP_LABEL[it.typ] || it.typ} · {it.author} · {fmt(it.createdAt)}{it.accepted ? ` · zaakceptował(a): ${it.acceptedBy}` : " · bez akceptacji"}{it.v > 1 ? ` · wersja ${it.v} (edytowany ${fmt(it.updatedAt)})` : ""}
+            {typeLabel(it)} · {it.author} · {fmt(it.createdAt)}
+            {it.rodzaj === "artykul" ? (it.accepted ? ` · zaakceptował(a): ${it.acceptedBy}` : " · bez akceptacji") : ""}
+            {it.v > 1 ? ` · wersja ${it.v} (edytowany ${fmt(it.updatedAt)})` : ""}
           </div>
         </RegistryRow>
       ))}
