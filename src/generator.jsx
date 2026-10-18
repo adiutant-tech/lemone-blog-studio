@@ -20,6 +20,7 @@ import { AcceptPanel, RegistryRow } from "./shared.jsx"; // akceptacja autora i 
 import { apiFetch, getSession } from "./auth.jsx";
 import { StageStepper, StageCard, DraftStatus, useDraftSaver, listDrafts, getDraft, deleteDraft, stageStatus, curVersion, regenNote } from "./stages.jsx"; // praca etapami (v4.17)
 import { humanizeHtml, loadAntiSlopRules } from "./humanize.js"; // humanizacja no-ai-slop na żądanie (v4.13)
+import { loadVoice, voiceBlock } from "./brandVoice.js"; // głos marki klinika/sklep (v4.19)
 import { DZIEDZINY } from "./prompts/klinika.js";
 
 const apiUrl = import.meta.env.VITE_API_URL || "https://api.anthropic.com/v1/messages";
@@ -406,7 +407,7 @@ ${isRanking ? "" : countRule + "\n"}- Jeśli materiały zawierają "KONSPEKT Z Z
 - Dla każdej sekcji: tytuł H2, opcjonalnie 2-3 H3, jedno zdanie tezy (co sekcja udowadnia/daje czytelnikowi)
 - 3 propozycje H1 (różne kąty, każdy z frazą główną, bez clickbaitu${isRanking ? "; liczba produktów w tytule dozwolona" : ""})
 
-${ANTI_SLOP}
+${ANTI_SLOP}${f.voice ? "\n\n" + voiceBlock(f.voice) : ""}
 
 ${STYLE_BY_TYPE[f.typ]}
 
@@ -458,7 +459,7 @@ ZWRÓĆ WYŁĄCZNIE HTML sekcji, bez komentarzy i bez markdown.` };
 function sharedPrefix(f, outline) {
   return `${articleContext(f, outline)}
 
-${ANTI_SLOP}
+${ANTI_SLOP}${f.voice ? "\n\n" + voiceBlock(f.voice) : ""}
 
 ${STYLE_BY_TYPE[f.typ]}
 
@@ -507,7 +508,7 @@ function buildRedlinePrompt(html, f) {
 - Zachowaj HTML; każde "${EM}" i "${EN}" zamień na "-"; zakresy liczbowe bez spacji (2-3)
 - Zachowaj wszystkie znaczniki <a href> bez zmian (adres i anchor)${typeRule}
 
-${ANTI_SLOP}
+${ANTI_SLOP}${f.voice ? "\n\n" + voiceBlock(f.voice) : ""}
 
 FRAGMENT:
 ${html}
@@ -541,7 +542,7 @@ WYMAGANIA:
 - Nie zaczynaj od "Tak,"/"Nie,"
 - Bez linków i bez nazw handlowych
 
-${ANTI_SLOP}
+${ANTI_SLOP}${f.voice ? "\n\n" + voiceBlock(f.voice) : ""}
 
 ${GUARD_KLINIKA}
 
@@ -745,9 +746,15 @@ export default function Generator({ shared, onSendToFormat }) {
 
   const productsOk = !isRanking || (parsedProducts.items.length >= MIN_RANKING_PRODUCTS && parsedProducts.errors.length === 0);
   const canStart = topic.trim() && keyword.trim() && productsOk && ownPagesBad.length === 0;
+  // Głos marki (v4.19): wczytywany raz na cel (klinika/sklep), trafia do konspektu, sekcji, redakcji i FAQ
+  const voiceRef = useRef({});
+  const ensureVoice = async () => {
+    if (!voiceRef.current[cel]) voiceRef.current[cel] = await loadVoice(cel);
+    return voiceRef.current[cel];
+  };
   const formData = (extra = {}) => ({
     typ, promptMatka, keyword, keywordsAux, topic, materials, length,
-    products: parsedProducts.items, research, ownPages, ...extra,
+    products: parsedProducts.items, research, ownPages, voice: voiceRef.current[cel], ...extra,
   });
   // Licznik kosztu przebiegu (szacunek z usage API, per etap)
   const [costs, setCosts] = useState([]);
@@ -842,6 +849,7 @@ export default function Generator({ shared, onSendToFormat }) {
     setError(null); setWarning(null);
     try {
       setPhase("outlineLoading");
+      await ensureVoice();
       const own = await loadOwnPages();
       let r = research;
       if (isKlinika && webSearch && !research) r = await runResearch();
@@ -921,6 +929,7 @@ export default function Generator({ shared, onSendToFormat }) {
     setProgress({ current: i + 1, total: units.length, label: "Piszę" });
     const before = usdRef.current;
     try {
+      await ensureVoice();
       const prev = i > 0 ? unitHtml(i - 1) : null;
       const html = shared.normalizeDashes(await writeUnit(units[i], prev, regen, regen?.mode === "popraw" ? unitHtml(i) : null));
       const k = unitKey(i);
@@ -1022,8 +1031,9 @@ export default function Generator({ shared, onSendToFormat }) {
     setHumanizeStep("Wczytuję zasady humanizacji...");
     try {
       const rules = await loadAntiSlopRules();
+      const voice = await ensureVoice();
       const res = await humanizeHtml(result.html, {
-        callModel, rules, keyword, klinika: isKlinika, track,
+        callModel, rules, keyword, klinika: isKlinika, voice, track,
         onProgress: (p) => setHumanizeStep(`Humanizacja: ${p.label} (${p.current}/${p.total})`),
       });
       const html = shared.normalizeDashes(res.html);
@@ -1042,6 +1052,7 @@ export default function Generator({ shared, onSendToFormat }) {
   const finishPipeline = async (parts, units) => {
     setPhase("finishing");
     setHumanizeMsg(null);
+    await ensureVoice();
     const f = formData();
     // Ponowienie po błędzie nie powtarza kroków, które już się udały (redakcja, FAQ)
     const sig = parts.join("\n<!--unit-->\n") + `|redline:${redline}`;
