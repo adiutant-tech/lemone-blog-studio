@@ -1,6 +1,6 @@
 name: Deploy to Firebase Hosting
 
-# Docelowy adres Studia od 2026-10-18: https://lmm-writer-8feb.web.app (projekt lemone-writer).
+# Jedyny adres Studia od 2026-10-18: https://lmm-writer-8feb.web.app (projekt lemone-writer; GitHub Pages wyłączony).
 # Wymaga sekretu repozytorium FIREBASE_SERVICE_ACCOUNT_LEMONE_WRITER (klucz JSON konta usługi z rolą
 # "Firebase Hosting Admin"). Dopóki sekretu nie ma, wdrożenie jest pomijane (wdrożenie ręczne: firebase deploy).
 on:
