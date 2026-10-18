@@ -143,6 +143,17 @@ function inputsBlock(kind, inputs, ownPages) {
     + K.fields.map(f => `• ${f.label}: ${(inputs[f.key] || "").trim() || "(brak)"}`).join("\n") + own;
 }
 
+// Druga połowa scenariusza to same wiersze <tr>; dokładamy je przed zamknięciem tabeli z pierwszej połowy
+export function joinTableHalves(half1, half2) {
+  const rows = (String(half2).match(/<tr[\s\S]*?<\/tr>/gi) || []).filter(r => !/<th[\s>]/i.test(r)).join("\n");
+  if (!rows) throw new Error("druga połowa scenariusza nie zawiera wierszy tabeli");
+  const end = half1.lastIndexOf("</table>");
+  if (end < 0) return `${half1}\n<table><tbody>${rows}</tbody></table>`;
+  const tb = half1.lastIndexOf("</tbody>", end);
+  const at = tb >= 0 && !/<tr/i.test(half1.slice(tb, end)) ? tb : end;
+  return half1.slice(0, at) + rows + "\n" + half1.slice(at);
+}
+
 // Tekst do promptera z kolumny wypowiedzi tabeli scenariusza; zastępuje albo wstawia jego sekcję
 export function rebuildPrompter(html, format = "long") {
   const F = FORMATS[format];
@@ -301,6 +312,17 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
   const ready = K.fields.filter(f => f.required).every(f => (inputs[f.key] || "").trim()) && prompt.loaded;
   const track = (e) => { costsRef.current = [...costsRef.current, e]; setCosts(costsRef.current); };
   const opts = (o) => ({ model, track, ...o });
+  // Ucięcie na limicie tokenów: jedno automatyczne ponowienie z niskim "effort" (myślenie modelu zjada limit),
+  // zamiast odsyłać użytkownika do klikania "Generuj" w kółko
+  const call = async (content, o, label) => {
+    try {
+      return await callModel(content, opts(o));
+    } catch (e) {
+      if (!/limicie tokenów/i.test(e.message) || o.effort === "low") throw e;
+      setStep(`${label}: odpowiedź za długa, ponawiam z krótszym przygotowaniem...`);
+      return await callModel(content, opts({ ...o, effort: "low" }));
+    }
+  };
   const norm = (h) => shared.normalizeDashes(stripFences(h));
   const S = F.sections;
 
@@ -330,26 +352,33 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
 
       if (isLong(K.format)) {
         if (!p.plan) {
-          setStep("Plan filmu, tytuły i otwarcia (A-C)...");
-          p.plan = norm(await callModel({ cached: ctx, text: `CZĘŚĆ 2 z 4: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}).` }, opts({ maxTokens: 16000, effort: "medium", stage: "plan" })));
+          setStep("Plan scenariusza, tytuły i otwarcia (A-C)...");
+          p.plan = norm(await call({ cached: ctx, text: `CZĘŚĆ 2 z 4: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}).` }, { maxTokens: 16000, effort: "medium", stage: "plan" }, "Plan"));
         }
+        // Pełny scenariusz w dwóch połowach: cała tabela filmu 8-15 min z "myśleniem" modelu nie mieści się
+        // w jednej odpowiedzi (limit 16 tys. tokenów); gotowa pierwsza połowa nie jest powtarzana przy ponowieniu
         if (!p.script) {
-          setStep("Pełny scenariusz (D)...");
-          p.script = norm(await callModel({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nCZĘŚĆ 3 z 4: zwróć wyłącznie sekcję D: <h2>${S.D}</h2> i jedną tabelę <table> z wierszem nagłówka ${K.tableHead || F.tableHead}. Zrealizuj otwarcie wybrane w C i długość z briefu.` }, opts({ maxTokens: 16000, effort: "medium", stage: "scenariusz" })));
+          if (!p.half1) {
+            setStep("Pełny scenariusz (D), pierwsza połowa...");
+            p.half1 = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nCZĘŚĆ 3 z 4, PIERWSZA POŁOWA: zwróć <h2>${S.D}</h2> i tabelę <table> z wierszem nagłówka ${K.tableHead || F.tableHead}, obejmującą pierwszą połowę filmu: otwarcie wybrane w C i rozwinięcie do mniej więcej połowy długości z briefu. Zakończ na pełnym wierszu, bez zakończenia filmu i bez komentarzy.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz, połowa 1"));
+          }
+          setStep("Pełny scenariusz (D), druga połowa...");
+          const half2 = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.plan}\n\nPIERWSZA POŁOWA SEKCJI D (gotowa):\n${p.half1}\n\nCZĘŚĆ 3 z 4, DRUGA POŁOWA: zwróć WYŁĄCZNIE kolejne wiersze <tr> tej samej tabeli (bez <table>, bez wiersza nagłówka, bez <h2>), od miejsca, w którym kończy się pierwsza połowa, do końca filmu razem z zakończeniem. Kontynuuj czasy, nie powtarzaj wierszy.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz, połowa 2"));
+          p.script = joinTableHalves(p.half1, half2);
         }
         if (!p.pack) {
           setStep("Pakiet publikacyjny, kontrola jakości, plan oceny (F-H)...");
-          p.pack = norm(await callModel({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-D:\n${p.plan}\n${p.script}\n\nCZĘŚĆ 4 z 4: zwróć wyłącznie sekcje F, G i H (${S.F}, ${S.G}, ${S.H}). W G sprawdź rzeczywisty scenariusz z sekcji D.` }, opts({ maxTokens: 16000, effort: "low", stage: "pakiet" })));
+          p.pack = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-D:\n${p.plan}\n${p.script}\n\nCZĘŚĆ 4 z 4: zwróć wyłącznie sekcje F, G i H (${S.F}, ${S.G}, ${S.H}). W G sprawdź rzeczywisty scenariusz z sekcji D.` }, { maxTokens: 16000, effort: "low", stage: "pakiet" }, "Pakiet"));
         }
       } else {
         if (!p.script) {
           setStep(`Brief, warianty otwarcia i scenariusz (A-C)...`);
           p.plan = "";
-          p.script = norm(await callModel({ cached: ctx, text: `CZĘŚĆ 2 z 3: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). Sekcja C to jedna tabela <table> z wierszem nagłówka ${K.tableHead || F.tableHead}.` }, opts({ maxTokens: 16000, effort: "medium", stage: "scenariusz" })));
+          p.script = norm(await call({ cached: ctx, text: `CZĘŚĆ 2 z 3: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). Sekcja C to jedna tabela <table> z wierszem nagłówka ${K.tableHead || F.tableHead}.` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz"));
         }
         if (!p.pack) {
           setStep(`Publikacja, kontrola zgodności i plan oceny (E-G)...`);
-          p.pack = norm(await callModel({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.script}\n\nCZĘŚĆ 3 z 3: zwróć wyłącznie sekcje E, F i G (${S.E}, ${S.F}, ${S.G}). W F sprawdź rzeczywisty scenariusz z sekcji C.` }, opts({ maxTokens: 16000, effort: "low", stage: "pakiet" })));
+          p.pack = norm(await call({ cached: ctx, text: `PRZYGOTOWANE JUŻ SEKCJE A-C:\n${p.script}\n\nCZĘŚĆ 3 z 3: zwróć wyłącznie sekcje E, F i G (${S.E}, ${S.F}, ${S.G}). W F sprawdź rzeczywisty scenariusz z sekcji C.` }, { maxTokens: 16000, effort: "low", stage: "pakiet" }, "Publikacja"));
         }
       }
 
@@ -424,7 +453,7 @@ function NewScenario({ kind, shared, prompt, author, onSaved }) {
       {step && <p style={{ ...ui.help, color: theme.color.text }}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> {step}</p>}
       {error && <div style={{ ...ui.banner("danger"), marginTop: 10 }}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
       <CostMeter costs={costs} />
-      <p style={ui.help}>{isLong(K.format) ? "Film powstaje w kilka minut (4 części)." : "Scenariusz powstaje w 1-2 minuty."} Scenariusz zapisuje się automatycznie i otwiera do edycji.</p>
+      <p style={ui.help}>{isLong(K.format) ? "Scenariusz filmu powstaje w kilka minut (pełny scenariusz w dwóch połowach)." : "Scenariusz powstaje w 1-2 minuty."} Scenariusz zapisuje się automatycznie i otwiera do edycji.</p>
     </div>
   );
 }
