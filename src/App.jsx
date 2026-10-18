@@ -13,6 +13,8 @@ import ArchiveModule from "./archive.jsx";
 import ScenarioModule from "./scenario.jsx";
 import theme from "./theme.js";
 import { LemoneLogo, CitrusDecor, citrusBar } from "./logo.jsx";
+import { APP_VERSION, APP_VERSION_NOTE } from "./version.js";
+import { UpdateBanner } from "./updateCheck.jsx"; // v4.14: pasek o nowej wersji
 
 // === CATEGORIES from Mapowanie_kategorii_Lemone.xlsx (156 entries) - REVERTED z 1149 do oryginału ===
 // 2026-10-16 (SLP-337, kontrola blog_studio_kategorie_kontrola_v1.csv + stan na żywo): 130 wpisów.
@@ -1583,8 +1585,12 @@ ${wrapper}`;
 // v4.2: bramka logowania przed aplikacją (osobny komponent, żeby nie łamać kolejności hooków)
 export default function Root() {
   const { session, login, logout } = useSession();
-  if (AUTH_ENABLED && !session) return <LoginView onLogin={login} />;
-  return <App session={session} onLogout={logout} />;
+  return (
+    <>
+      <UpdateBanner />
+      {AUTH_ENABLED && !session ? <LoginView onLogin={login} /> : <App session={session} onLogout={logout} />}
+    </>
+  );
 }
 
 function App({ session, onLogout }) {
@@ -1797,7 +1803,7 @@ function App({ session, onLogout }) {
           </h1>
           <div style={{ borderLeft: `1px solid ${theme.color.border}`, paddingLeft: 18, alignSelf: "stretch", display: "flex", flexDirection: "column", justifyContent: "center" }}>
             <span style={{ alignSelf: "flex-start", fontSize: 10, fontWeight: 600, color: theme.color.leaf, background: theme.color.accentSoft, padding: "2px 8px", borderRadius: 99, fontFamily: theme.font.mono }}>
-              v4.13 · Humanizacja (no-ai-slop) na żądanie
+              {APP_VERSION} · {APP_VERSION_NOTE}
             </span>
             <p style={{ fontSize: 12, color: theme.color.textSecondary, margin: "6px 0 0", maxWidth: 420 }}>
               {activeModule === "format"
