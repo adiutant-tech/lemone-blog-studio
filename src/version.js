@@ -2,7 +2,7 @@
 // Jedno miejsce na numer i opis wersji: plakietka w nagłówku i plik version.json (vite.config.js).
 // Przy każdej zmianie funkcjonalnej podbij APP_VERSION i opisz zmianę w APP_VERSION_NOTE.
 export const APP_VERSION = "v4.21";
-export const APP_VERSION_NOTE = "Fable 5.1 domyślnie do pisania scenariuszy i artykułów";
+export const APP_VERSION_NOTE = "Fable 5.1 domyślnie, wybór staranności, lżejsze prompty artykułów";
 
 // Znacznik builda wstawiany przez Vite (define); w trybie dev "dev" = sprawdzanie wyłączone
 // eslint-disable-next-line no-undef

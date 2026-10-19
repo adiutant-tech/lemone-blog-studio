@@ -12,7 +12,7 @@ import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, 
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
 import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
-import { callModel, CostMeter, MODELS, DEFAULT_MODEL, SEARCH_DEPTH, stripFences } from "./generator.jsx";
+import { callModel, CostMeter, MODELS, DEFAULT_MODEL, SEARCH_DEPTH, stripFences, EFFORTS, DEFAULT_EFFORT } from "./generator.jsx";
 import { SCENARIUSZ_PROMPT_DEFAULT, SCENARIUSZ_FIELDS } from "./prompts/scenariusz.js";
 import { ROLKI, rolkaFields } from "./prompts/rolki.js";
 import { FORMATY, formatFields } from "./prompts/formaty.js";
@@ -436,6 +436,8 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
   const [webSearch, setWebSearch] = useState(d0 ? !!d0.webSearch : K.webSearch);
   const [depth, setDepth] = useState(d0?.depth || (long ? "standard" : "szybkie"));
   const [auto, setAuto] = useState(!!d0?.auto);
+  // v4.21: staranność etapów pisania (plan, scenariusz, brief); pakiet i wyciąg zostają na niskiej
+  const [effort, setEffort] = useState(() => { const e = d0?.effort || lsGet("lemone_scen_effort", DEFAULT_EFFORT); return EFFORTS[e] ? e : DEFAULT_EFFORT; });
   const [showForm, setShowForm] = useState(!d0);
   // v4.20: materiały źródłowe (pliki i linki); pliki żyją w tej karcie, szkic pamięta ich nazwy i linki
   const [mats, setMats] = useState([]);
@@ -462,7 +464,7 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
   // Aktualny stan dla asynchronicznych kroków (stan Reacta w zamknięciu bywa nieaktualny)
   const R = useRef({});
   // Aktualizacja w miejscu (nie nowy obiekt): zapis po await, np. R.current.voice = await ..., trafia do bieżącego obiektu
-  Object.assign(R.current, { inputs, model, webSearch, depth, auto, choices, excluded, mats, matLinks });
+  Object.assign(R.current, { inputs, model, effort, webSearch, depth, auto, choices, excluded, mats, matLinks });
   if (R.current.stages === undefined) R.current.stages = stages;
   if (R.current.own === undefined) R.current.own = d0?.own ?? null;
   if (R.current.promptSnap === undefined) R.current.promptSnap = d0?.promptText ? { text: d0.promptText, version: d0.promptVersion || 0 } : null;
@@ -488,15 +490,8 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
 
   const track = (e) => { R.current.usd += e.usd; setCosts(c => [...c, e]); };
   const callOpts = (o) => ({ model: R.current.model, track, ...o });
-  const call = async (content, o, label) => {
-    try {
-      return await callModel(content, callOpts(o));
-    } catch (e) {
-      if (!/limicie tokenów/i.test(e.message) || o.effort === "low") throw e;
-      setDetail(`${label}: odpowiedź za długa, ponawiam z krótszym przygotowaniem...`);
-      return await callModel(content, callOpts({ ...o, effort: "low" }));
-    }
-  };
+  // Ponowienie po ucięciu (niska staranność) robi callModel; label zostaje dla czytelności wywołań
+  const call = (content, o) => callModel(content, callOpts(o));
   const norm = (h) => shared.normalizeDashes(stripFences(h));
   const cur = (k, st = R.current.stages) => curVersion(st[k])?.content;
 
@@ -511,7 +506,7 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
     const c = R.current;
     saver.save({
       kind, title: (c.inputs.temat || "").trim().slice(0, 140) || "(bez tematu)", stage: stageLabel(st),
-      data: { kind, inputs: c.inputs, model: c.model, webSearch: c.webSearch, depth: c.depth, auto: c.auto, stages: st, choices: c.choices, excluded: c.excluded,
+      data: { kind, inputs: c.inputs, model: c.model, effort: c.effort, webSearch: c.webSearch, depth: c.depth, auto: c.auto, stages: st, choices: c.choices, excluded: c.excluded,
         own: c.own, promptText: c.promptSnap?.text, promptVersion: c.promptSnap?.version, voiceText: c.voice, usd: c.usd,
         matLinks: c.matLinks, matMeta: (c.mats || []).length ? c.mats.map(m => ({ name: m.name, size: m.size, format: m.format || "PDF" })) : matMeta },
     });
@@ -578,16 +573,16 @@ Maks. ok. 1500 słów, zwykły tekst w punktach, bez markdown. Nie używaj myśl
         callOpts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[R.current.depth].uses, stage: "weryfikacja" }));
       return { text: shared.normalizeDashes(out.text), sources: out.sources || [] };
     },
-    plan: async (r, prev) => norm(await call({ cached: context().ctx, text: `CZĘŚĆ: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). W sekcji B ponumeruj zestawy jako "Zestaw 1", "Zestaw 2", "Zestaw 3"; w sekcji C warianty jako "Wariant 1" i "Wariant 2"; przy każdej sekcji wskaż rekomendację.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "plan" }, "Plan")),
-    pol1: async (r, prev) => norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-C:\n${cur("plan")}${choicesBlock()}\n\nCZĘŚĆ: PIERWSZA POŁOWA SCENARIUSZA. Zwróć <h2>${S.D}</h2> i tabelę <table> z wierszem nagłówka ${tableHead}, obejmującą pierwszą połowę filmu: wybrane otwarcie i rozwinięcie do mniej więcej połowy długości z briefu. Zakończ na pełnym wierszu, bez zakończenia filmu i bez komentarzy.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Pierwsza połowa")),
+    plan: async (r, prev) => norm(await call({ cached: context().ctx, text: `CZĘŚĆ: zwróć wyłącznie sekcje A, B i C (${S.A}, ${S.B}, ${S.C}). W sekcji B ponumeruj zestawy jako "Zestaw 1", "Zestaw 2", "Zestaw 3"; w sekcji C warianty jako "Wariant 1" i "Wariant 2"; przy każdej sekcji wskaż rekomendację.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: R.current.effort, stage: "plan" }, "Plan")),
+    pol1: async (r, prev) => norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-C:\n${cur("plan")}${choicesBlock()}\n\nCZĘŚĆ: PIERWSZA POŁOWA SCENARIUSZA. Zwróć <h2>${S.D}</h2> i tabelę <table> z wierszem nagłówka ${tableHead}, obejmującą pierwszą połowę filmu: wybrane otwarcie i rozwinięcie do mniej więcej połowy długości z briefu. Zakończ na pełnym wierszu, bez zakończenia filmu i bez komentarzy.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: R.current.effort, stage: "scenariusz" }, "Pierwsza połowa")),
     pol2: async (r, prev) => {
-      const rows = norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-C:\n${cur("plan")}${choicesBlock()}\n\nZATWIERDZONA PIERWSZA POŁOWA SEKCJI D:\n${cur("pol1")}\n\nCZĘŚĆ: DRUGA POŁOWA. Zwróć WYŁĄCZNIE kolejne wiersze <tr> tej samej tabeli (bez <table>, bez wiersza nagłówka, bez <h2>), od miejsca, w którym kończy się pierwsza połowa, do końca filmu razem z zakończeniem. Kontynuuj czasy, nie powtarzaj wierszy.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Druga połowa"));
+      const rows = norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-C:\n${cur("plan")}${choicesBlock()}\n\nZATWIERDZONA PIERWSZA POŁOWA SEKCJI D:\n${cur("pol1")}\n\nCZĘŚĆ: DRUGA POŁOWA. Zwróć WYŁĄCZNIE kolejne wiersze <tr> tej samej tabeli (bez <table>, bez wiersza nagłówka, bez <h2>), od miejsca, w którym kończy się pierwsza połowa, do końca filmu razem z zakończeniem. Kontynuuj czasy, nie powtarzaj wierszy.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: R.current.effort, stage: "scenariusz" }, "Druga połowa"));
       const trs = (rows.match(/<tr[\s\S]*?<\/tr>/gi) || []).filter(x => !/<th[\s>]/i.test(x)).join("\n");
       if (!trs) throw new Error("druga połowa nie zawiera wierszy tabeli");
       return `<table><thead><tr>${tableHead}</tr></thead><tbody>${trs}</tbody></table>`;
     },
-    brief: async (r, prev) => norm(await call({ cached: context().ctx, text: `CZĘŚĆ: zwróć wyłącznie sekcje A i B (${S.A}, ${S.B}). W sekcji B ponumeruj warianty jako "Wariant 1", "Wariant 2", "Wariant 3" i wskaż rekomendację.${regenNote(r, prev)}` }, { maxTokens: 12000, effort: "medium", stage: "plan" }, "Brief")),
-    scenariusz: async (r, prev) => norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-B:\n${cur("brief")}${choicesBlock()}\n\nCZĘŚĆ: zwróć wyłącznie sekcję C: <h2>${S.C}</h2> i jedną tabelę <table> z wierszem nagłówka ${tableHead}. Zrealizuj wybrany hook.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: "medium", stage: "scenariusz" }, "Scenariusz")),
+    brief: async (r, prev) => norm(await call({ cached: context().ctx, text: `CZĘŚĆ: zwróć wyłącznie sekcje A i B (${S.A}, ${S.B}). W sekcji B ponumeruj warianty jako "Wariant 1", "Wariant 2", "Wariant 3" i wskaż rekomendację.${regenNote(r, prev)}` }, { maxTokens: 12000, effort: R.current.effort, stage: "plan" }, "Brief")),
+    scenariusz: async (r, prev) => norm(await call({ cached: context().ctx, text: `ZATWIERDZONE SEKCJE A-B:\n${cur("brief")}${choicesBlock()}\n\nCZĘŚĆ: zwróć wyłącznie sekcję C: <h2>${S.C}</h2> i jedną tabelę <table> z wierszem nagłówka ${tableHead}. Zrealizuj wybrany hook.${regenNote(r, prev)}` }, { maxTokens: 16000, effort: R.current.effort, stage: "scenariusz" }, "Scenariusz")),
     pakiet: async (r, prev) => {
       const body = long
         ? `ZATWIERDZONE SEKCJE A-D:\n${cur("plan")}\n${joinTableHalves(cur("pol1"), cur("pol2"))}`
@@ -881,6 +876,10 @@ Maks. ok. 1500 słów, zwykły tekst w punktach, bez markdown. Nie używaj myśl
           <select value={model} onChange={e => { setModel(e.target.value); R.current.model = e.target.value; lsSet("lemone_scen_model", e.target.value); }} style={{ ...ui.input, width: "auto" }} disabled={busy}
             title="Model można zmienić także między etapami (np. tańszy do poprawek)">
             {Object.entries(MODELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <select value={effort} onChange={e => { setEffort(e.target.value); R.current.effort = e.target.value; lsSet("lemone_scen_effort", e.target.value); }} style={{ ...ui.input, width: "auto" }} disabled={busy}
+            title="Ile model myśli i dopracowuje przed napisaniem planu i scenariusza; można zmienić między etapami">
+            {Object.entries(EFFORTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: theme.size.small + 1, cursor: started ? "default" : "pointer" }}>
             <input type="checkbox" checked={webSearch} onChange={e => setWebSearch(e.target.checked)} disabled={started} /> Weryfikacja w źródłach (web search)
