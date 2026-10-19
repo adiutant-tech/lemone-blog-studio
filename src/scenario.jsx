@@ -8,7 +8,7 @@
 // odświeżany przy każdym zapisie. Scenariusze (Worker /scripts) widzą i edytują wszyscy.
 
 import { useState, useEffect, useRef } from "react";
-import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles, CheckCircle2, Circle, XCircle, Plus, X, Users } from "lucide-react";
+import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles, CheckCircle2, Circle, XCircle, Plus, X, Users, Paperclip, Upload, Link2, FileText } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
 import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
@@ -18,6 +18,7 @@ import { ROLKI, rolkaFields } from "./prompts/rolki.js";
 import { FORMATY, formatFields } from "./prompts/formaty.js";
 import { humanizeHtml, loadAntiSlopRules, ANTI_SLOP_PROMPT } from "./humanize.js";
 import { loadVoice, voiceBlock, VOICE } from "./brandVoice.js";
+import { readMaterialFile, fetchMaterialLink, parseLinks, materialBlocks, sizeMB, MAT_LIMITS, MAT_ACCEPT } from "./materials.js";
 import { StageStepper, StageCard, DraftStatus, useDraftSaver, listDrafts, getDraft, deleteDraft, stageStatus, curVersion, pushVersion, pickVersion, approveStage, regenNote } from "./stages.jsx";
 import { ANTI_SLOP_DEFAULT } from "./prompts/antiSlop.js";
 
@@ -391,6 +392,7 @@ function PeoplePicker({ value, onChange, disabled, profile: P }) {
 // Szkic zapisuje się na serwerze po każdym kroku (lista "W toku" w zakładce Scenariusze).
 // Opcja "bez zatwierdzania" przechodzi wszystkie etapy od razu, jak przed v4.17.
 const STAGE_META = {
+  materialy: { label: "Materiały źródłowe: wyciąg", hint: "ok. 1 min" },
   weryfikacja: { label: "Weryfikacja w źródłach", hint: "ok. 1 min" },
   plan: { label: "Brief, tytuły i otwarcia (A-C)", hint: "ok. 1 min" },
   pol1: { label: "Pełny scenariusz: pierwsza połowa", hint: "1-2 min" },
@@ -435,6 +437,12 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
   const [depth, setDepth] = useState(d0?.depth || (long ? "standard" : "szybkie"));
   const [auto, setAuto] = useState(!!d0?.auto);
   const [showForm, setShowForm] = useState(!d0);
+  // v4.20: materiały źródłowe (pliki i linki); pliki żyją w tej karcie, szkic pamięta ich nazwy i linki
+  const [mats, setMats] = useState([]);
+  const [matLinks, setMatLinks] = useState(d0?.matLinks || "");
+  const [matBusy, setMatBusy] = useState(false);
+  const [matError, setMatError] = useState(null);
+  const matMeta = d0?.matMeta || [];
 
   // --- przebieg etapami
   const [stages, setStages] = useState(d0?.stages || {});
@@ -454,14 +462,15 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
   // Aktualny stan dla asynchronicznych kroków (stan Reacta w zamknięciu bywa nieaktualny)
   const R = useRef({});
   // Aktualizacja w miejscu (nie nowy obiekt): zapis po await, np. R.current.voice = await ..., trafia do bieżącego obiektu
-  Object.assign(R.current, { inputs, model, webSearch, depth, auto, choices, excluded });
+  Object.assign(R.current, { inputs, model, webSearch, depth, auto, choices, excluded, mats, matLinks });
   if (R.current.stages === undefined) R.current.stages = stages;
   if (R.current.own === undefined) R.current.own = d0?.own ?? null;
   if (R.current.promptSnap === undefined) R.current.promptSnap = d0?.promptText ? { text: d0.promptText, version: d0.promptVersion || 0 } : null;
   if (R.current.usd === undefined) R.current.usd = Number(d0?.usd) || 0;
   if (R.current.voice === undefined) R.current.voice = d0?.voiceText ?? null; // głos marki zapisany w szkicu (spójny w całym scenariuszu)
 
-  const ORDER = [...(webSearch ? ["weryfikacja"] : []), ...(long ? ["plan", "pol1", "pol2", "pakiet"] : ["brief", "scenariusz", "pakiet"])];
+  const hasMaterials = mats.length > 0 || parseLinks(matLinks).length > 0 || !!stages.materialy?.versions?.length;
+  const ORDER = [...(hasMaterials ? ["materialy"] : []), ...(webSearch ? ["weryfikacja"] : []), ...(long ? ["plan", "pol1", "pol2", "pakiet"] : ["brief", "scenariusz", "pakiet"])];
   const stageList = ORDER.map(k => ({ key: k, ...STAGE_META[k], ...(stages[k] || { versions: [] }) }));
   const statusOf = (s) => stageStatus(s, { runningKey: busyKey, failedKey });
   const busy = !!busyKey || finishing;
@@ -503,7 +512,8 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
     saver.save({
       kind, title: (c.inputs.temat || "").trim().slice(0, 140) || "(bez tematu)", stage: stageLabel(st),
       data: { kind, inputs: c.inputs, model: c.model, webSearch: c.webSearch, depth: c.depth, auto: c.auto, stages: st, choices: c.choices, excluded: c.excluded,
-        own: c.own, promptText: c.promptSnap?.text, promptVersion: c.promptSnap?.version, voiceText: c.voice, usd: c.usd },
+        own: c.own, promptText: c.promptSnap?.text, promptVersion: c.promptSnap?.version, voiceText: c.voice, usd: c.usd,
+        matLinks: c.matLinks, matMeta: (c.mats || []).length ? c.mats.map(m => ({ name: m.name, size: m.size, format: m.format || "PDF" })) : matMeta },
     });
   };
   const commit = (st) => { R.current.stages = st; setStages(st); };
@@ -521,18 +531,50 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
     const base = `${c.promptSnap.text}\n\n${voice ? voice + "\n\n" : ""}${appRules(K.format)}\n\n${inputsBlock(kind, c.inputs, c.own || [])}`;
     const res = ORDER.includes("weryfikacja") ? cur("weryfikacja") : null;
     const exc = c.excluded.length ? `\nNIE KORZYSTAJ z tych źródeł (odrzucone przez redakcję): ${c.excluded.join(", ")}` : "";
-    const research = res
+    const mat = ORDER.includes("materialy") ? cur("materialy") : null;
+    const matBlock = mat ? `\n\nMATERIAŁY REDAKCJI (zatwierdzony wyciąg z plików i stron; mają pierwszeństwo przed ogólną wiedzą modelu, ale twierdzenia medyczne weryfikuj):\n${mat.text}` : "";
+    const research = matBlock + (res
       ? `\n\nNOTATKA WERYFIKACYJNA (zatwierdzona przez redakcję):\n${res.text}${exc}`
-      : "\n\nBEZ WERYFIKACJI ONLINE: nie wymyślaj źródeł, statystyk ani badań; fakty tylko z danych i materiałów.";
-    return { base, ctx: base + research };
+      : "\n\nBEZ WERYFIKACJI ONLINE: nie wymyślaj źródeł, statystyk ani badań; fakty tylko z danych i materiałów.");
+    return { base: base + matBlock, ctx: base + research };
   };
   const tableHead = K.tableHead || F.tableHead;
 
   const generators = {
+    materialy: async (r, prev) => {
+      const c = R.current;
+      const items = [...(c.mats || [])];
+      const failed = [];
+      const links = parseLinks(c.matLinks);
+      for (let i = 0; i < links.length; i++) {
+        setDetail(`Pobieram link ${i + 1} z ${links.length}...`);
+        try { items.push(await fetchMaterialLink(links[i])); } catch (e) { failed.push(e.message); }
+      }
+      if (!items.length) throw new Error(failed.length ? `Nie pobrano żadnego materiału: ${failed.join("; ")}` : "brak materiałów: pliki trzeba dodać ponownie (szkic pamięta tylko ich nazwy)");
+      const pdfBytes = items.filter(m => m.kind === "pdf").reduce((sum, m) => sum + m.data.length * 0.75, 0);
+      if (pdfBytes > MAT_LIMITS.total) throw new Error(`PDF-y łącznie ${sizeMB(pdfBytes)}; limit ${sizeMB(MAT_LIMITS.total)}. Usuń część plików.`);
+      setDetail(`Czytam materiały (${items.length})...`);
+      const ask = `Przygotowujesz materiał do scenariusza: ${K.label}.
+TEMAT: ${(c.inputs.temat || "").trim()}
+
+Powyżej są materiały redakcji (pliki i strony). Zrób z nich wyciąg do pracy nad scenariuszem:
+- fakty, definicje, mechanizmy, zalecenia, przeciwwskazania i cytaty warte użycia;
+- dane liczbowe zawsze z kontekstem (jakiej grupy dotyczą, z jakiego okresu, z jakiego badania lub dokumentu); z arkuszy najważniejsze wartości i trendy;
+- przy każdym punkcie źródło w nawiasie kwadratowym: nazwa pliku albo adres strony;
+- na końcu osobno: sprzeczności między materiałami oraz rzeczy do sprawdzenia (np. stare dane, brak źródła, wnioski z jednego badania);
+- nic spoza materiałów; nie oceniaj i nie dopowiadaj.
+Maks. ok. 1500 słów, zwykły tekst w punktach, bez markdown. Nie używaj myślników ani półpauz, tylko dywizu "-".${regenNote(r, prev?.text)}`;
+      const out = await call([...materialBlocks(items), { type: "text", text: ask }], { model: "claude-sonnet-5-5", maxTokens: 12000, effort: "low", stage: "materiały" }, "Materiały");
+      return {
+        text: shared.normalizeDashes(stripFences(out)),
+        sources: items.map(m => ({ name: m.name, url: m.url || "", kind: m.source, format: m.format || "PDF" })),
+        failed,
+      };
+    },
     weryfikacja: async (r, prev) => {
       const { base } = context();
       const out = await callModel(
-        `${base}\n\nCZĘŚĆ 1: tylko weryfikacja. Sprawdź w aktualnych, wiarygodnych źródłach kluczowe fakty potrzebne do tego materiału${K.promptName === "scenariusz" ? " (krok 1 promptu: SPRAWDŹ PODSTAWY)" : ""}. Zwróć zwięzłą notatkę (maks. ok. ${long ? 800 : 400} słów, zwykły tekst w punktach): datę weryfikacji, ustalenia z URL źródła w nawiasie przy każdym punkcie. Bez scenariusza.${regenNote(r, prev?.text)}`,
+        `${base}\n\nCZĘŚĆ 1: tylko weryfikacja. Sprawdź w aktualnych, wiarygodnych źródłach kluczowe fakty potrzebne do tego materiału${K.promptName === "scenariusz" ? " (krok 1 promptu: SPRAWDŹ PODSTAWY)" : ""}. Zwróć zwięzłą notatkę (maks. ok. ${long ? 800 : 400} słów, zwykły tekst w punktach): datę weryfikacji, ustalenia z URL źródła w nawiasie przy każdym punkcie.${ORDER.includes("materialy") ? " Sprawdź też kluczowe twierdzenia z MATERIAŁÓW REDAKCJI i oznacz te, których aktualne źródła nie potwierdzają albo które są nieaktualne." : ""} Bez scenariusza.${regenNote(r, prev?.text)}`,
         callOpts({ maxTokens: 8000, search: true, searchUses: SEARCH_DEPTH[R.current.depth].uses, stage: "weryfikacja" }));
       return { text: shared.normalizeDashes(out.text), sources: out.sources || [] };
     },
@@ -618,7 +660,7 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
   const regenerate = async (key, r) => { await runStage(key, r); if (R.current.auto) await advance(); };
   const edit = (key, value) => {
     const prevC = cur(key);
-    const content = key === "weryfikacja" ? { ...prevC, text: shared.normalizeDashes(value) } : shared.normalizeDashes(value);
+    const content = key === "weryfikacja" || key === "materialy" ? { ...prevC, text: shared.normalizeDashes(value) } : shared.normalizeDashes(value);
     const st = pushVersion(R.current.stages, key, { content, at: new Date().toISOString(), by: author, usd: 0, uwagi: "", source: "edycja" }, ORDER);
     commit(st); persist(st);
   };
@@ -630,6 +672,31 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
     ORDER.slice(idx + 1).forEach(k => { if (st[k]?.versions?.length) st[k] = { ...st[k], approved: false, stale: true }; });
     commit(st); return st;
   };
+  const staleMaterials = () => {
+    if (!R.current.stages.materialy?.versions?.length) return;
+    const st = { ...R.current.stages, materialy: { ...R.current.stages.materialy, approved: false, stale: true } };
+    commit(st); persist(markStaleAfter("materialy"));
+  };
+  const addFiles = async (fileList) => {
+    setMatError(null); setMatBusy(true);
+    const next = [...R.current.mats];
+    const errs = [];
+    for (const file of Array.from(fileList || [])) {
+      try {
+        const m = await readMaterialFile(file);
+        const pdfTotal = [...next, m].filter(x => x.kind === "pdf").reduce((sum, x) => sum + x.size, 0);
+        if (pdfTotal > MAT_LIMITS.total) { errs.push(`${file.name}: łącznie PDF-y przekroczyłyby ${sizeMB(MAT_LIMITS.total)}`); continue; }
+        next.push(m);
+      } catch (e) { errs.push(e.message); }
+    }
+    R.current.mats = next; setMats(next);
+    if (errs.length) setMatError(errs.join("; "));
+    setMatBusy(false);
+    staleMaterials();
+  };
+  const removeMat = (id) => { const next = R.current.mats.filter(m => m.id !== id); R.current.mats = next; setMats(next); staleMaterials(); };
+  const changeLinks = (v) => { R.current.matLinks = v; setMatLinks(v); };
+
   const setChoice = (k, v, afterKey) => {
     const c = { ...R.current.choices, [k]: v };
     R.current.choices = c; setChoices(c);
@@ -653,7 +720,11 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
       const body = long
         ? `${cur("plan")}\n${joinTableHalves(cur("pol1"), cur("pol2"))}\n${cur("pakiet")}`
         : `${cur("brief")}\n${cur("scenariusz")}\n${cur("pakiet")}`;
-      const html = rebuildPrompter(`${body}\n${sourcesHtml}`, K.format);
+      const matSrc = ORDER.includes("materialy") ? (cur("materialy")?.sources || []) : [];
+      const matHtml = matSrc.length
+        ? `<h2>Materiały redakcji</h2><ul>${matSrc.map(m => `<li>${m.url ? `<a href="${m.url.replace(/"/g, "&quot;")}" target="_blank" rel="noopener">${m.name.replace(/</g, "&lt;")}</a>` : `${m.name.replace(/</g, "&lt;")} (${m.format})`}</li>`).join("")}</ul>`
+        : "";
+      const html = rebuildPrompter(`${body}\n${sourcesHtml}\n${matHtml}`, K.format);
       const c = R.current;
       const saved = await api("/scripts", {
         kind, title: (c.inputs.temat || "").trim().slice(0, 140), inputs: c.inputs, model: c.model, usd: c.usd, promptVersion: c.promptSnap?.version || 0,
@@ -704,6 +775,16 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
     ) : shown.key === "brief" ? (
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 12, padding: 12, borderRadius: theme.radius.control, background: P.soft }}>
         <ChoiceSelect label="Hook do scenariusza" value={choices.hook} options={CHOICE_OPTS.hook} onChange={v => setChoice("hook", v, "brief")} />
+      </div>
+    ) : shown.key === "materialy" ? (
+      <div style={{ marginTop: 12, fontSize: theme.size.small + 1 }}>
+        <label style={ui.label}>Materiały w tym wyciągu</label>
+        <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+          {(cur("materialy", stages)?.sources || []).map((m, i) => (
+            <li key={i}>{m.url ? <a href={m.url} target="_blank" rel="noreferrer" style={{ color: theme.color.text }}>{m.name}</a> : m.name} <span style={ui.help}>({m.kind === "link" ? "link" : m.format})</span></li>
+          ))}
+        </ul>
+        {(cur("materialy", stages)?.failed || []).length > 0 && <div style={{ ...ui.banner("warning"), marginTop: 8 }}>Nie pobrano: {cur("materialy", stages).failed.join("; ")}</div>}
       </div>
     ) : shown.key === "weryfikacja" && sources.length ? (
       <div style={{ marginTop: 12 }}>
@@ -766,6 +847,34 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
                 </div>
               ))}
             </div>
+            <div style={{ marginTop: theme.space(2), padding: 12, border: `1px dashed ${theme.color.border}`, borderRadius: theme.radius.control }}>
+              <label style={{ ...ui.label, display: "flex", alignItems: "center", gap: 6 }}><Paperclip size={13} /> Materiały źródłowe (opcjonalnie)</label>
+              <p style={{ ...ui.help, marginTop: 0 }}>
+                Pliki PDF, DOCX, XLSX, CSV, TXT i linki do stron z danymi medycznymi lub innymi ważnymi treściami. Pierwszy etap zrobi z nich wyciąg ze źródłami;
+                po Twoim zatwierdzeniu weryfikacja w źródłach i wszystkie dalsze etapy będą go uwzględniać. PDF do {MAT_LIMITS.pdf / 1024 / 1024} MB, łącznie do {MAT_LIMITS.total / 1024 / 1024} MB.
+              </p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <label style={{ ...ui.btnSecondary, cursor: busy || matBusy ? "not-allowed" : "pointer", ...(busy || matBusy ? ui.btnDisabled : {}) }}>
+                  {matBusy ? <Loader2 size={13} className="spin" /> : <Upload size={13} />} Dodaj pliki
+                  <input type="file" multiple accept={MAT_ACCEPT} style={{ display: "none" }} disabled={busy || matBusy}
+                    onChange={e => { addFiles(e.target.files); e.target.value = ""; }} />
+                </label>
+                {mats.map(m => (
+                  <span key={m.id} style={{ ...ui.pill(theme.color.bg, theme.color.text), border: `1px solid ${theme.color.border}` }}>
+                    <FileText size={12} /> {m.name} <span style={ui.help}>({m.kind === "pdf" ? sizeMB(m.size) : `${m.format}, ${(m.chars || m.text.length).toLocaleString("pl-PL")} znaków`})</span>
+                    {!busy && <button onClick={() => removeMat(m.id)} title="Usuń" style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, display: "inline-flex" }}><X size={12} /></button>}
+                  </span>
+                ))}
+              </div>
+              {!mats.length && matMeta.length > 0 && (
+                <p style={{ ...ui.help }}>W szkicu były pliki: {matMeta.map(m => m.name).join(", ")}. Wyciąg z nich jest zapisany; pliki trzeba dodać ponownie tylko, jeśli chcesz wygenerować wyciąg od nowa.</p>
+              )}
+              <label style={{ ...ui.label, marginTop: 10, display: "flex", alignItems: "center", gap: 6 }}><Link2 size={13} /> Linki źródłowe (jeden w linii, maks. {MAT_LIMITS.links})</label>
+              <textarea value={matLinks} onChange={e => changeLinks(e.target.value)} onBlur={() => staleMaterials()} rows={2} disabled={busy}
+                style={{ ...ui.input, resize: "vertical", fontFamily: theme.font.mono, fontSize: 12 }}
+                placeholder="np. https://www.mp.pl/pacjent/... albo link do PDF z wytycznymi" />
+              {matError && <div style={{ ...ui.banner("danger"), marginTop: 8 }}>{matError}</div>}
+            </div>
           </>
         )}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: theme.space(2) }}>
@@ -820,7 +929,7 @@ function NewScenario({ kind, shared, prompt, author, session, onSaved, onActivit
       )}
 
       {shown && !busyKey && shown.versions?.length > 0 && (
-        <StageCard stage={shown} status={statusOf(shown)} kind={shown.key === "weryfikacja" ? "text" : "html"} busy={busy} profile={P}
+        <StageCard stage={shown} status={statusOf(shown)} kind={shown.key === "weryfikacja" || shown.key === "materialy" ? "text" : "html"} busy={busy} profile={P}
           approveLabel={ORDER.indexOf(shown.key) === ORDER.length - 1 ? "Zatwierdź" : "Zatwierdź i dalej"}
           onApprove={() => approve(shown.key)} onRegenerate={(r) => regenerate(shown.key, r)} onEdit={(v) => edit(shown.key, v)} onPickVersion={(i) => pick(shown.key, i)}
           note={shown.key === "pol2" ? <p style={{ ...ui.help, marginTop: 0 }}>Druga połowa dołączy do tabeli z pierwszej połowy; tekst do promptera powstanie z obu.</p> : null}>
