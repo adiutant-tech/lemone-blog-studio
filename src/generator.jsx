@@ -31,12 +31,29 @@ const EN = String.fromCharCode(0x2013); // półpauza, j.w.
 const DASH_RE = new RegExp(`[${EM}${EN}]`, "g");
 
 // Modele do wyboru (Worker ma tę samą białą listę). Formatowanie ma własne, bez zmian.
+// v4.21: Fable 5.1 domyślnie do pisania (najżywszy tekst; ok. 2,5x droższy od Opusa 5.5).
+// Wyszukiwanie w źródłach zawsze idzie na Opusie 5.5 (patrz callModel).
 export const MODELS = {
-  "claude-opus-5-5":   "Opus 5.5 (najwyższa jakość)",
+  "claude-fable-5-1":  "Fable 5.1 (najlepszy tekst, ok. 2,5x drożej)",
+  "claude-opus-5-5":   "Opus 5.5 (wysoka jakość)",
   "claude-sonnet-5-5": "Sonnet 5.5 (szybszy, tańszy)",
   "claude-sonnet-4-6": "Sonnet 4.6 (poprzedni)",
 };
-export const DEFAULT_MODEL = "claude-opus-5-5";
+export const DEFAULT_MODEL = "claude-fable-5-1";
+const FABLE = "claude-fable-5-1";
+const SEARCH_MODEL = "claude-opus-5-5"; // etapy z web search (weryfikacja, zaplecze źródeł)
+
+// Jednorazowo (v4.21): zapamiętany w przeglądarce wybór Opusa 5.5 przechodzi na Fable 5.1;
+// wybór Sonneta zostaje. Później każdy wybór w formularzu jest pamiętany jak dotąd.
+try {
+  if (!localStorage.getItem("lemone_model_fable_v1")) {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if ((k.startsWith("lemone_gen_model_") || k === "lemone_scen_model") && localStorage.getItem(k) === "claude-opus-5-5") localStorage.setItem(k, FABLE);
+    }
+    localStorage.setItem("lemone_model_fable_v1", "1");
+  }
+} catch (e) { /* brak dostępu do pamięci przeglądarki: zostaje domyślny model */ }
 const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search" };
 // Koszt źródeł zależy od liczby wyszukiwań (każde to ok. 10 wyników z treścią na wejściu modelu),
 // nie od długości listy źródeł; dlatego limit dotyczy wyszukiwań.
@@ -165,6 +182,7 @@ async function readMessageStream(res) {
 // === Koszt: cennik API (USD za 1M tokenów; zapis do cache 1,25x wejścia) ===
 // Szacunek z usage zwracanego przez API; web search 10 USD / 1000 wyszukiwań.
 const PRICES = {
+  "claude-fable-5-1":  { in: 10, out: 50, cacheRead: 0.25 },
   "claude-opus-5-5":   { in: 4, out: 20, cacheRead: 0.20 },
   "claude-sonnet-5-5": { in: 2, out: 10, cacheRead: 0.20 },
   "claude-sonnet-4-6": { in: 3, out: 15, cacheRead: 0.30 },
@@ -203,6 +221,8 @@ function toContent(content) {
 // Przy web search obsługujemy "pause_turn" (wznowienie) i zbieramy cytowane źródła.
 export async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, effort, search = false, searchUses = 3, stage = "inne", track } = {}) {
   if (STAGE_MODEL[stage]) model = STAGE_MODEL[stage];
+  // Fable 5.1 pisze, ale wyszukiwanie zostaje na Opusie 5.5 (wersja narzędzia web search potwierdzona dla Opusa)
+  if (search && model === FABLE) model = SEARCH_MODEL;
   const messages = [{ role: "user", content: toContent(content) }];
   const texts = [];
   const sources = new Map();
