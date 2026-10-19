@@ -643,7 +643,7 @@ const unitLabel = (u) => ({
 }[u.kind]);
 
 // Licznik kosztu przebiegu: suma i podział na etapy (szacunek z cennika API)
-const STAGE_LABEL = { "załączniki": "załączniki", "źródła": "źródła (web search)", konspekt: "konspekt", sekcje: "sekcje", redakcja: "redakcja (Sonnet 5.5)", humanizacja: "humanizacja (Sonnet 5.5)", faq: "FAQ (Sonnet 5.5)", notatka: "notatka", weryfikacja: "weryfikacja (web search)", plan: "plan i tytuły", scenariusz: "scenariusz", pakiet: "pakiet i kontrola" };
+const STAGE_LABEL = { "załączniki": "załączniki", "źródła": "źródła (web search)", konspekt: "konspekt", sekcje: "sekcje", redakcja: "redakcja (Sonnet 5.5)", humanizacja: "humanizacja (Sonnet 5.5)", "materiały": "materiały źródłowe (Sonnet 5.5)", faq: "FAQ (Sonnet 5.5)", notatka: "notatka", weryfikacja: "weryfikacja (web search)", plan: "plan i tytuły", scenariusz: "scenariusz", pakiet: "pakiet i kontrola" };
 export function CostMeter({ costs, note }) {
   if (!costs.length) return null;
   const usd = (n) => n.toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
