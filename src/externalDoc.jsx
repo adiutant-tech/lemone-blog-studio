@@ -9,7 +9,7 @@ import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
 import { sanitizeHtml } from "./shared.jsx";
 import { KINDS } from "./scenario.jsx";
-import { readMaterialFile } from "./materials.js";
+import { docxToHtml, cleanPastedHtml } from "./richImport.js";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 export const EXTERNAL_KIND = "zewnetrzny";
@@ -61,6 +61,7 @@ export function ExternalDocForm({ shared, author, onSaved, onClose }) {
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [note, setNote] = useState(null);
 
   const html = useMemo(() => {
     const raw = format === "html" ? content : textToHtml(content);
@@ -83,13 +84,29 @@ export function ExternalDocForm({ shared, author, onSaved, onClose }) {
       } else if (["txt", "md"].includes(ext)) {
         setContent(await file.text()); setFormat("text");
       } else if (ext === "docx") {
-        const m = await readMaterialFile(file);
-        setContent(m.text); setFormat("text");
+        // v4.23: DOCX z formatowaniem (nagłówki, pogrubienia, listy, tabele, linki)
+        setContent(await docxToHtml(await file.arrayBuffer())); setFormat("html");
+        setNote("Wczytano DOCX z formatowaniem: nagłówki, pogrubienia, listy, tabele i linki. Sprawdź w podglądzie.");
       } else {
         throw new Error("obsługiwane pliki: HTML, TXT, MD, DOCX (PDF wklej jako tekst)");
       }
       if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " "));
     } catch (e) { setError(`${file.name}: ${e.message}`); }
+  };
+
+  // v4.23: wklejanie z Worda / Google Docs zachowuje strukturę (HTML ze schowka, oczyszczony)
+  const onPaste = (e) => {
+    const rich = e.clipboardData?.getData("text/html");
+    if (!rich || !/<(p|h\d|table|ul|ol|li|strong|b|span|div)\b/i.test(rich)) return; // zwykły tekst: domyślne wklejanie
+    e.preventDefault();
+    const clean = cleanPastedHtml(rich);
+    const ta = e.target;
+    const start = ta.selectionStart ?? content.length, end = ta.selectionEnd ?? content.length;
+    const base = format === "html" ? content : "";
+    const next = format === "html" ? base.slice(0, start) + clean + base.slice(end) : clean;
+    if (format !== "html" && content.trim() && !window.confirm("Wklejany tekst ma formatowanie, więc pole przełączy się na HTML i zastąpi obecną treść. Kontynuować?")) return;
+    setFormat("html"); setContent(next);
+    setNote("Wklejono z formatowaniem (nagłówki, pogrubienia, listy, tabele, linki); style i kolory usunięte. Sprawdź w podglądzie.");
   };
 
   const save = async () => {
@@ -179,14 +196,15 @@ export function ExternalDocForm({ shared, author, onSaved, onClose }) {
         <div className="scenario-doc scroll-thin" style={{ border: `1px solid ${theme.color.border}`, borderRadius: theme.radius.control, padding: "10px 12px", maxHeight: 480, overflow: "auto", fontSize: 14, lineHeight: 1.65, background: theme.color.surface }}
           dangerouslySetInnerHTML={{ __html: html }} />
       ) : (
-        <textarea value={content} onChange={e => setContent(e.target.value)} rows={14} disabled={busy} spellCheck={false}
+        <textarea value={content} onChange={e => setContent(e.target.value)} onPaste={onPaste} rows={14} disabled={busy} spellCheck={false}
           style={{ ...ui.input, resize: "vertical", fontFamily: format === "html" ? theme.font.mono : theme.font.body, fontSize: format === "html" ? 12.5 : 13.5, lineHeight: 1.5 }}
           placeholder={format === "html"
             ? "<h2>Śródtytuł</h2>\n<p>Akapit...</p>"
             : "Wklej tekst. Pusta linia = nowy akapit; linie od „-” albo „1.” = lista; „# Tytuł” albo „A. BRIEF” = śródtytuł; kolumny rozdzielone tabulatorem = tabela."} />
       )}
+      {note && <div style={{ ...ui.banner("info"), marginTop: 8 }}>{note}</div>}
       <p style={{ ...ui.help }}>
-        {format === "html" ? "HTML zostanie oczyszczony ze skryptów i ramek." : "Tekst zostanie zamieniony na HTML (akapity, listy, śródtytuły, tabele)."} Podgląd pokazuje dokładnie to, co trafi do Rejestru.
+        Najprościej: skopiuj dokument w Wordzie lub Google Docs i wklej tutaj; formatowanie i tabele zostaną. {format === "html" ? "HTML zostanie oczyszczony ze skryptów i ramek." : "Zwykły tekst zostanie zamieniony na HTML (akapity, listy, śródtytuły, tabele z tabulatorów)."} Podgląd pokazuje dokładnie to, co trafi do Rejestru.
       </p>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 6 }}>
