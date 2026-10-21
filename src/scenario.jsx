@@ -191,6 +191,115 @@ export function rebuildPrompter(html, format = "long") {
   return root.innerHTML;
 }
 
+// === Uzgadnianie scenariusza z poprawionym tekstem do promptera (v4.25) ===
+// Tekst do promptera jest nadrzędny. Krok 1 (bez modelu): wypowiedzi w drugiej kolumnie tabeli
+// zastępujemy akapitami tekstu do promptera; dopasowanie akapitów do wierszy przez wyrównanie
+// sekwencji (podobieństwo słów), więc działa też po połączeniu, rozdzieleniu albo usunięciu akapitu.
+// Krok 2 (model): pozostałe sekcje poprawiane tylko tam, gdzie przeczą zmianom albo je cytują.
+const words = (t) => new Set(String(t).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter(w => w.length > 2));
+const similarity = (a, b) => {
+  const A = words(a), B = words(b);
+  if (!A.size && !B.size) return 1;
+  let common = 0; A.forEach(w => { if (B.has(w)) common++; });
+  return common / Math.max(A.size, B.size, 1);
+};
+// Dopasowanie: dla każdego wiersza lista akapitów (może być pusta = wypowiedź usunięta)
+function alignParagraphs(rows, paras) {
+  const n = rows.length, m = paras.length;
+  if (n === m) return rows.map((_, i) => [paras[i]]);
+  const SKIP = 0.75;
+  const cost = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(Infinity));
+  const move = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(null));
+  cost[0][0] = 0;
+  for (let i = 0; i <= n; i++) for (let j = 0; j <= m; j++) {
+    const c = cost[i][j]; if (c === Infinity) continue;
+    if (i < n && j < m) { const v = c + (1 - similarity(rows[i], paras[j])); if (v < cost[i + 1][j + 1]) { cost[i + 1][j + 1] = v; move[i + 1][j + 1] = "match"; } }
+    // remis: pusty zostaje późniejszy wiersz (połączone wypowiedzi trafiają do wcześniejszego)
+    if (i < n) { const v = c + SKIP - i * 1e-6; if (v < cost[i + 1][j]) { cost[i + 1][j] = v; move[i + 1][j] = "row"; } }   // wiersz bez akapitu
+    if (j < m) { const v = c + SKIP; if (v < cost[i][j + 1]) { cost[i][j + 1] = v; move[i][j + 1] = "para"; } } // akapit dodatkowy
+  }
+  const out = rows.map(() => []);
+  const extra = []; // akapity dodatkowe: doklejamy do poprzedniego dopasowanego wiersza
+  let i = n, j = m;
+  const steps = [];
+  while (i > 0 || j > 0) { const mv = move[i][j]; steps.push([mv, i, j]); if (mv === "match") { i--; j--; } else if (mv === "row") i--; else j--; }
+  steps.reverse();
+  let lastRow = -1;
+  for (const [mv, ii, jj] of steps) {
+    if (mv === "match") { lastRow = ii - 1; out[lastRow].push(...extra.splice(0), paras[jj - 1]); }
+    else if (mv === "para") { if (lastRow >= 0) out[lastRow].push(paras[jj - 1]); else extra.push(paras[jj - 1]); }
+  }
+  if (extra.length) (out[0] = out[0] || []).unshift(...extra);
+  return out;
+}
+const sectionOf = (root, key) => {
+  const h = [...root.querySelectorAll("h2")].find(x => x.textContent.trim().toUpperCase().startsWith(key + "."));
+  if (!h) return null;
+  const nodes = [h];
+  for (let el = h.nextElementSibling; el && el.tagName !== "H2"; el = el.nextElementSibling) nodes.push(el);
+  return nodes;
+};
+// Krok 1: tabela z tekstu do promptera; zwraca {html, changes:[{before, after}], rows}
+export function syncTableFromPrompter(html, format = "long") {
+  const F = FORMATS[format];
+  const d = new DOMParser().parseFromString(`<div id="root">${html}</div>`, "text/html");
+  const root = d.getElementById("root");
+  const tNodes = sectionOf(root, F.table), pNodes = sectionOf(root, F.prompter);
+  if (!tNodes || !pNodes) throw new Error(`brak sekcji ${F.table} (tabela scenariusza) albo ${F.prompter} (tekst do promptera)`);
+  const table = tNodes.map(n => n.tagName === "TABLE" ? n : n.querySelector?.("table")).find(Boolean);
+  if (!table) throw new Error("w sekcji scenariusza nie ma tabeli");
+  const cells = [...table.querySelectorAll("tr")].map(tr => tr.querySelectorAll("td")).filter(td => td.length >= 2).map(td => td[1]);
+  const paras = pNodes.slice(1).flatMap(n => n.tagName === "P" ? [n] : [...(n.querySelectorAll?.("p, li") || [])]).map(p => p.textContent.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (!paras.length) throw new Error("tekst do promptera jest pusty");
+  const rows = cells.map(c => c.textContent.replace(/\s+/g, " ").trim());
+  const map = alignParagraphs(rows, paras);
+  const changes = [];
+  cells.forEach((c, i) => {
+    const next = map[i].join(" ").trim();
+    if (next !== rows[i]) { changes.push({ before: rows[i], after: next }); c.textContent = next; }
+  });
+  return { html: root.innerHTML, changes, rows: cells.length };
+}
+// Krok 2: sekcje inne niż tabela i tekst do promptera, poprawione przez model tylko tam, gdzie trzeba
+export async function syncOtherSections(html, format, changes, { callModel, track }) {
+  const F = FORMATS[format];
+  const d = new DOMParser().parseFromString(`<div id="root">${html}</div>`, "text/html");
+  const root = d.getElementById("root");
+  const keys = Object.keys(F.sections).filter(k => k !== F.table && k !== F.prompter && sectionOf(root, k));
+  if (!keys.length || !changes.length) return { html, changedSections: [] };
+  const sectionHtml = (k) => sectionOf(root, k).map(n => n.outerHTML).join("");
+  const prompter = sectionOf(root, F.prompter).slice(1).map(n => n.textContent.trim()).filter(Boolean).join("\n\n");
+  const ask = `Jesteś redaktorem scenariusza wideo. Redakcja poprawiła TEKST DO PROMPTERA: to wersja nadrzędna, a tabela scenariusza jest już z nim zgodna.
+Uzgodnij z tymi poprawkami pozostałe sekcje. Poprawiaj wyłącznie zdania, które przeczą nowemu tekstowi albo cytują, streszczają lub omawiają zmienione fragmenty (np. wariant otwarcia, tytuły, rozdziały i opis w pakiecie, kontrola jakości). Wszystko inne zostaw bez zmian; nie dodawaj nowych treści, nie skracaj.
+Zachowaj HTML i nagłówki sekcji. Nie używaj myślników ani półpauz, tylko dywizu "-".
+
+ZMIANY W TEKŚCIE MÓWIONYM (przed -> po):
+${changes.slice(0, 80).map((c, i) => `${i + 1}. PRZED: ${c.before || "(brak)"}\n   PO: ${c.after || "(usunięte)"}`).join("\n")}
+
+NOWY TEKST DO PROMPTERA (całość, dla kontekstu):
+${prompter.slice(0, 40000)}
+
+SEKCJE DO UZGODNIENIA:
+${keys.map(k => `=== ${k} ===\n${sectionHtml(k)}`).join("\n\n")}
+
+Zwróć WYŁĄCZNIE JSON: {"sections": {"<litera>": "<pełny HTML sekcji razem z jej nagłówkiem h2>"}} tylko dla sekcji, które zmieniłeś. Jeśli żadna nie wymaga zmian, zwróć {"sections": {}}.`;
+  const out = await callModel(ask, { model: "claude-sonnet-5-5", maxTokens: 16000, effort: "low", stage: "uzgadnianie", track });
+  const t = String(out).replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  const j = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
+  const changedSections = [];
+  for (const [k, secHtml] of Object.entries(j.sections || {})) {
+    const nodes = sectionOf(root, k);
+    if (!nodes || !keys.includes(k) || typeof secHtml !== "string") continue;
+    const tmp = d.createElement("div"); tmp.innerHTML = secHtml;
+    const h = tmp.querySelector("h2");
+    if (!h || !h.textContent.trim().toUpperCase().startsWith(k + ".")) continue; // odpowiedź bez właściwego nagłówka: pomijamy
+    nodes[0].before(...tmp.childNodes);
+    nodes.forEach(n => n.remove());
+    changedSections.push(k);
+  }
+  return { html: root.innerHTML, changedSections };
+}
+
 // Wypowiedzi z tabeli scenariusza (druga kolumna), do sprawdzenia, czy zapis zmienia tabelę
 const tableSpoken = (html, format = "long") => {
   const F = FORMATS[format];
@@ -1036,6 +1145,8 @@ export function ScriptEditor({ id, shared, author, onBack }) {
   const [notice, setNotice] = useState(null); // {type: "info"|"warning"|"danger", text}
   const [humanizeStep, setHumanizeStep] = useState(null);
   const [humanizeErr, setHumanizeErr] = useState(null);
+  const [syncStep, setSyncStep] = useState(null);
+  const syncedRef = useRef(false); // edytor zawiera uzgodnioną treść: zapis bez ostrzeżenia o tekście do promptera
   const editorRef = useRef(null);
 
   useEffect(() => { (async () => { try { setX(await api(`/scripts/${id}`)); } catch (e) { setError(e.message); } })(); }, [id]);
@@ -1068,6 +1179,7 @@ export function ScriptEditor({ id, shared, author, onBack }) {
       const tableChanged = tableSpoken(raw, K.format) !== tableSpoken(current.html, K.format);
       const prompterEdited = prompterText(raw, K.format) !== prompterText(current.html, K.format);
       const keepPrompter = prompterEdited && !tableChanged;
+      const wasSynced = syncedRef.current; syncedRef.current = false;
       const html = keepPrompter ? raw : rebuildPrompter(raw, K.format);
       const updated = await api(`/scripts/${id}`, { html, by: author });
       setX(updated); setViewV(null); setDirty(false); showSaved(updated);
@@ -1077,6 +1189,8 @@ export function ScriptEditor({ id, shared, author, onBack }) {
         setNotice({ type: "warning", text: `Nic nie zapisano: treść jest taka sama jak w ostatniej wersji ${vNo}. Nowa wersja nie powstała.` });
       } else if (keepPrompter) {
         setNotice({ type: "info", text: `Zapisano jako wersję ${vNo}. Tekst do promptera zapisany z Twoimi poprawkami (tabela scenariusza bez zmian).` });
+      } else if (wasSynced) {
+        setNotice({ type: "info", text: `Zapisano jako wersję ${vNo}: tabela i sekcje uzgodnione z tekstem do promptera.` });
       } else if (prompterEdited && tableChanged) {
         setNotice({ type: "warning", text: `Zapisano jako wersję ${vNo}. Zmieniono i tabelę, i tekst do promptera: tekst do promptera odtworzono z tabeli, więc ręczne poprawki w nim nie zostały zachowane. Popraw je w tabeli albo zapisz osobno.` });
       } else {
@@ -1084,6 +1198,31 @@ export function ScriptEditor({ id, shared, author, onBack }) {
       }
     } catch (e) { setNotice({ type: "danger", text: `Nie zapisano: ${e.message}. Twoje zmiany są nadal w edytorze; spróbuj ponownie.` }); }
     setBusy(false);
+  };
+  // v4.25: uzgodnienie tabeli i pozostałych sekcji z poprawionym tekstem do promptera (wynik do przejrzenia, bez zapisu)
+  const syncFromPrompter = async () => {
+    setNotice(null); setSyncStep("Uzgadniam tabelę z tekstem do promptera...");
+    let usd = 0;
+    try {
+      const step1 = syncTableFromPrompter(shared.normalizeDashes(working()), K.format);
+      if (!step1.changes.length) {
+        setNotice({ type: "info", text: "Tabela i tekst do promptera są już zgodne; nic do uzgodnienia." });
+        setSyncStep(null); return;
+      }
+      setSyncStep(`Tabela uzgodniona (${step1.changes.length} wypowiedzi). Sprawdzam pozostałe sekcje...`);
+      let result = { html: step1.html, changedSections: [] }, modelErr = null;
+      try { result = await syncOtherSections(step1.html, K.format, step1.changes, { callModel, track: (e) => { usd += e.usd; } }); }
+      catch (e) { modelErr = e.message; }
+      const html = shared.normalizeDashes(result.html);
+      setCode(html);
+      if (editorRef.current) editorRef.current.innerHTML = sanitizeHtml(html);
+      setDirty(true); syncedRef.current = true;
+      const secs = result.changedSections.length ? `; poprawione sekcje: ${result.changedSections.join(", ")}` : "; pozostałe sekcje bez zmian";
+      setNotice({ type: modelErr ? "warning" : "info", text: `Uzgodniono ${step1.changes.length} ${step1.changes.length === 1 ? "wypowiedź" : "wypowiedzi"} w tabeli${modelErr ? `; pozostałych sekcji nie sprawdzono (${modelErr})` : secs}${usd ? ` (koszt ${usdFmt(usd)} USD)` : ""}. Przejrzyj zmiany i kliknij „Zapisz zmiany”.` });
+    } catch (e) {
+      setNotice({ type: "danger", text: `Nie uzgodniono: ${e.message}` });
+    }
+    setSyncStep(null);
   };
   // v4.24: usuwanie wersji (wybranej albo wszystkich poza bieżącą); usunięte trafiają do kosza
   const deleteVersions = async (list, label) => {
@@ -1170,6 +1309,11 @@ export function ScriptEditor({ id, shared, author, onBack }) {
             </button>
           ))}
         </div>
+        <button onClick={syncFromPrompter} disabled={!isCurrent || busy || !!humanizeStep || !!syncStep}
+          style={{ ...ui.btnSecondary, ...(!isCurrent || busy || humanizeStep || syncStep ? ui.btnDisabled : {}) }}
+          title="Po poprawkach w tekście do promptera: przenosi je do tabeli scenariusza i poprawia pozostałe sekcje, które ich dotyczą (wynik do przejrzenia przed zapisem)">
+          {syncStep ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Uzgodnij z tekstem do promptera
+        </button>
         <button onClick={humanize} disabled={!isCurrent || dirty || busy || !!humanizeStep}
           style={{ ...ui.btnSecondary, ...(!isCurrent || dirty || busy || humanizeStep ? ui.btnDisabled : {}) }}
           title={dirty ? "Najpierw zapisz zmiany" : isCurrent ? "Przeredaguj tekst mówiony i opis według zasad no-ai-slop (nowa wersja)" : "Humanizacja działa na bieżącej wersji"}>
@@ -1181,6 +1325,7 @@ export function ScriptEditor({ id, shared, author, onBack }) {
         </button>
       </div>
       {humanizeStep && <p style={{ ...ui.help, margin: 0, color: theme.color.text }}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> {humanizeStep}</p>}
+      {syncStep && <p style={{ ...ui.help, margin: 0, color: theme.color.text }}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> {syncStep}</p>}
       {saved && <div style={ui.banner("info")}>{saved}</div>}
       {notice && <div style={{ ...ui.banner(notice.type), display: "flex", gap: 10, alignItems: "flex-start" }}><span style={{ flex: 1 }}>{notice.text}</span><button onClick={() => setNotice(null)} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} aria-label="Zamknij"><X size={13} /></button></div>}
       {humanizeErr && <div style={ui.banner("danger")}>{humanizeErr}</div>}
