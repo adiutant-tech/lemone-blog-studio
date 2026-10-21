@@ -10,7 +10,7 @@ export const MAT_LIMITS = { pdf: 15 * 1024 * 1024, text: 5 * 1024 * 1024, total:
 export const MAT_ACCEPT = ".pdf,.docx,.xlsx,.csv,.txt,.md";
 
 // ---------- ZIP (DOCX, XLSX): katalog centralny + rozpakowanie deflate przez DecompressionStream
-async function unzip(buf, wanted) {
+export async function unzip(buf, wanted) {
   const dv = new DataView(buf);
   let eocd = -1;
   for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 66000); i--) {
