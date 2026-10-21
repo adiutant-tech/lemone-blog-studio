@@ -8,7 +8,7 @@
 // odświeżany przy każdym zapisie. Scenariusze (Worker /scripts) widzą i edytują wszyscy.
 
 import { useState, useEffect, useRef } from "react";
-import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles, CheckCircle2, Circle, XCircle, Plus, X, Users, Paperclip, Upload, Link2, FileText } from "lucide-react";
+import { Clapperboard, Loader2, AlertCircle, RefreshCw, Save, ArrowLeft, Code2, Eye, History, RotateCcw, Download, Sparkles, CheckCircle2, Circle, XCircle, Plus, X, Users, Paperclip, Upload, Link2, FileText, Trash2 } from "lucide-react";
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
 import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
@@ -190,6 +190,18 @@ export function rebuildPrompter(html, format = "long") {
   }
   return root.innerHTML;
 }
+
+// Wypowiedzi z tabeli scenariusza (druga kolumna), do sprawdzenia, czy zapis zmienia tabelę
+const tableSpoken = (html, format = "long") => {
+  const F = FORMATS[format];
+  const d = new DOMParser().parseFromString(`<div id="root">${html}</div>`, "text/html");
+  const h = [...d.querySelectorAll("h2")].find(x => x.textContent.trim().toUpperCase().startsWith(F.table + "."));
+  for (let el = h?.nextElementSibling; el && el.tagName !== "H2"; el = el.nextElementSibling) {
+    const t = el.tagName === "TABLE" ? el : el.querySelector?.("table");
+    if (t) return [...t.querySelectorAll("tr")].filter(tr => tr.querySelectorAll("td").length >= 2).map(tr => tr.querySelectorAll("td")[1].textContent.replace(/\s+/g, " ").trim()).join("\n");
+  }
+  return "";
+};
 
 const prompterText = (html, format = "long") => {
   const key = FORMATS[format].prompter;
@@ -1021,6 +1033,7 @@ export function ScriptEditor({ id, shared, author, onBack }) {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(null);
+  const [notice, setNotice] = useState(null); // {type: "info"|"warning"|"danger", text}
   const [humanizeStep, setHumanizeStep] = useState(null);
   const [humanizeErr, setHumanizeErr] = useState(null);
   const editorRef = useRef(null);
@@ -1040,15 +1053,47 @@ export function ScriptEditor({ id, shared, author, onBack }) {
   const P = theme.profile[K.cel];
   const working = () => mode === "code" ? code : (editorRef.current ? editorRef.current.innerHTML : code);
   const switchMode = (k) => { if (k === mode) return; if (k === "code" && editorRef.current && dirty) setCode(editorRef.current.innerHTML); setMode(k); };
+  // Edytor pokazuje dokładnie to, co jest zapisane (po zapisie, usunięciu wersji, humanizacji)
+  const showSaved = (rec) => {
+    const last = rec.versions[rec.versions.length - 1].html;
+    setCode(last);
+    if (editorRef.current) editorRef.current.innerHTML = sanitizeHtml(last);
+  };
   const save = async () => {
-    setBusy(true); setError(null);
+    setBusy(true); setNotice(null);
     try {
-      const html = rebuildPrompter(shared.normalizeDashes(working()), K.format);
+      const raw = shared.normalizeDashes(working());
+      // v4.24: tekst do promptera poprawiony ręcznie (tabela bez zmian) zapisujemy tak, jak jest;
+      // wcześniej był zawsze odtwarzany z tabeli i ręczne poprawki znikały bez ostrzeżenia
+      const tableChanged = tableSpoken(raw, K.format) !== tableSpoken(current.html, K.format);
+      const prompterEdited = prompterText(raw, K.format) !== prompterText(current.html, K.format);
+      const keepPrompter = prompterEdited && !tableChanged;
+      const html = keepPrompter ? raw : rebuildPrompter(raw, K.format);
       const updated = await api(`/scripts/${id}`, { html, by: author });
-      setX(updated); setViewV(null); setDirty(false);
-      setSaved(`Zapisano jako wersję ${updated.versions.length}; tekst do promptera odświeżony z tabeli.`);
-      setTimeout(() => setSaved(null), 3500);
-    } catch (e) { setError(e.message); }
+      setX(updated); setViewV(null); setDirty(false); showSaved(updated);
+      const lastV = updated.versions[updated.versions.length - 1];
+      const vNo = `${lastV.v} (${fmt(lastV.at)}, ${lastV.by})`;
+      if (updated.changed === false) {
+        setNotice({ type: "warning", text: `Nic nie zapisano: treść jest taka sama jak w ostatniej wersji ${vNo}. Nowa wersja nie powstała.` });
+      } else if (keepPrompter) {
+        setNotice({ type: "info", text: `Zapisano jako wersję ${vNo}. Tekst do promptera zapisany z Twoimi poprawkami (tabela scenariusza bez zmian).` });
+      } else if (prompterEdited && tableChanged) {
+        setNotice({ type: "warning", text: `Zapisano jako wersję ${vNo}. Zmieniono i tabelę, i tekst do promptera: tekst do promptera odtworzono z tabeli, więc ręczne poprawki w nim nie zostały zachowane. Popraw je w tabeli albo zapisz osobno.` });
+      } else {
+        setNotice({ type: "info", text: `Zapisano jako wersję ${vNo}; tekst do promptera odświeżony z tabeli.` });
+      }
+    } catch (e) { setNotice({ type: "danger", text: `Nie zapisano: ${e.message}. Twoje zmiany są nadal w edytorze; spróbuj ponownie.` }); }
+    setBusy(false);
+  };
+  // v4.24: usuwanie wersji (wybranej albo wszystkich poza bieżącą); usunięte trafiają do kosza
+  const deleteVersions = async (list, label) => {
+    if (!window.confirm(`Usunąć ${label}? Usunięte wersje trafią do kosza (admin może je odzyskać).`)) return;
+    setBusy(true); setNotice(null);
+    try {
+      const updated = await api(`/scripts/${id}`, { action: "deleteVersions", versions: list });
+      setX(updated); setViewV(null); setDirty(false); showSaved(updated);
+      setNotice({ type: "info", text: `Usunięto: ${label}. Zostało wersji: ${updated.versions.length}.` });
+    } catch (e) { setNotice({ type: "danger", text: `Nie usunięto: ${e.message}` }); }
     setBusy(false);
   };
   // Humanizacja (no-ai-slop): tekst mówiony z tabeli i opis do publikacji; wynik = nowa wersja
@@ -1068,8 +1113,8 @@ export function ScriptEditor({ id, shared, author, onBack }) {
       else {
         const html = rebuildPrompter(shared.normalizeDashes(res.html), K.format);
         const updated = await api(`/scripts/${id}`, { html, by: author });
-        setX(updated); setViewV(null); setDirty(false);
-        setSaved(`Humanizacja zapisana jako wersja ${updated.versions.length} (poprawione fragmenty: ${res.changed}, koszt ${usdFmt(usd)} USD). Poprzednia wersja jest w historii.`);
+        setX(updated); setViewV(null); setDirty(false); showSaved(updated);
+        setSaved(`Humanizacja zapisana jako wersja ${updated.versions[updated.versions.length - 1].v} (poprawione fragmenty: ${res.changed}, koszt ${usdFmt(usd)} USD). Poprzednia wersja jest w historii.`);
       }
       setTimeout(() => setSaved(null), 8000);
     } catch (e) { setHumanizeErr(`Humanizacja nie powiodła się: ${e.message}. Scenariusz bez zmian; możesz spróbować ponownie.`); }
@@ -1096,6 +1141,9 @@ export function ScriptEditor({ id, shared, author, onBack }) {
             : <>{K.label} · {x.author} · {fmt(x.createdAt)} · model: {MODELS[x.model] || x.model || "-"} · prompt: {x.promptVersion ? `wersja ${x.promptVersion}` : "domyślny"} · koszt: {usdFmt(x.usd)} USD</>}
           {x.inputs?.lekarz ? ` · ${x.inputs.lekarz}` : x.inputs?.wystepuje ? ` · ${x.inputs.wystepuje}` : ""}
         </p>
+        <p style={{ ...ui.help, margin: "4px 0 0", color: theme.color.text }}>
+          <strong>Ostatni zapis:</strong> {fmt(current.at)} · {current.by} · wersja {current.v} z {x.versions.length}
+        </p>
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <CopyButton text={prompterText(shown.html, K.format)} label={`Kopiuj: ${F.sections[F.prompter].replace(/^[A-H]\. /, "").toLowerCase()}`} primary profile={P} />
@@ -1103,9 +1151,15 @@ export function ScriptEditor({ id, shared, author, onBack }) {
         <button onClick={download} style={ui.btnSecondary}><Download size={13} /> Pobierz .html</button>
         <div style={{ flex: 1 }} />
         {x.versions.length > 1 && (
-          <select value={shown.v} onChange={e => setViewV(Number(e.target.value))} style={{ ...ui.input, width: "auto" }}>
-            {x.versions.map(v => <option key={v.v} value={v.v}>Wersja {v.v} ({v.by}, {fmt(v.at)}){v === current ? " · bieżąca" : ""}</option>)}
-          </select>
+          <>
+            <select value={shown.v} onChange={e => { if (dirty && !window.confirm("Masz niezapisane zmiany. Przejść do innej wersji i je porzucić?")) return; setViewV(Number(e.target.value)); }} style={{ ...ui.input, width: "auto" }} disabled={busy}>
+              {x.versions.map(v => <option key={v.v} value={v.v}>Wersja {v.v} ({v.by}, {fmt(v.at)}){v === current ? " · bieżąca" : ""}</option>)}
+            </select>
+            <button onClick={() => deleteVersions([shown.v], `wersję ${shown.v}${isCurrent ? " (bieżącą; bieżącą stanie się poprzednia)" : ""}`)} disabled={busy}
+              style={{ ...ui.btnSecondary, padding: "6px 10px" }} title="Usuń oglądaną wersję"><Trash2 size={13} /> Usuń tę wersję</button>
+            <button onClick={() => deleteVersions(x.versions.filter(v => v !== current).map(v => v.v), `wszystkie starsze wersje (${x.versions.length - 1}); zostanie tylko bieżąca`)} disabled={busy}
+              style={{ ...ui.btnSecondary, padding: "6px 10px" }} title="Zostaw tylko bieżącą wersję"><Trash2 size={13} /> Usuń starsze</button>
+          </>
         )}
         <div style={{ display: "flex", background: theme.color.border, borderRadius: 8, padding: 2, gap: 2 }}>
           {[["preview", "Podgląd", Eye], ["code", "Kod HTML", Code2]].map(([k, label, Icon]) => (
@@ -1128,9 +1182,10 @@ export function ScriptEditor({ id, shared, author, onBack }) {
       </div>
       {humanizeStep && <p style={{ ...ui.help, margin: 0, color: theme.color.text }}><Loader2 size={13} className="spin" style={{ verticalAlign: "-2px" }} /> {humanizeStep}</p>}
       {saved && <div style={ui.banner("info")}>{saved}</div>}
+      {notice && <div style={{ ...ui.banner(notice.type), display: "flex", gap: 10, alignItems: "flex-start" }}><span style={{ flex: 1 }}>{notice.text}</span><button onClick={() => setNotice(null)} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }} aria-label="Zamknij"><X size={13} /></button></div>}
       {humanizeErr && <div style={ui.banner("danger")}>{humanizeErr}</div>}
       {!isCurrent && <p style={{ ...ui.help, margin: 0 }}>Podgląd starszej wersji {shown.v}: tylko do odczytu.</p>}
-      <p style={{ ...ui.help, margin: 0 }}>Tekst do promptera ({F.prompter}) składa się z drugiej kolumny tabeli scenariusza ({F.table}) przy każdym zapisie: poprawiaj wypowiedzi w tabeli.</p>
+      <p style={{ ...ui.help, margin: 0 }}>Tekst do promptera ({F.prompter}) powstaje z drugiej kolumny tabeli scenariusza ({F.table}). Zmiana w tabeli odświeża go przy zapisie; poprawki wpisane wprost w tekst do promptera (bez zmian w tabeli) zapisują się tak, jak je wpiszesz.</p>
       <div style={{ ...ui.card, maxHeight: 760, overflow: "auto" }} className="scroll-thin scenario-doc">
         <style>{`.scenario-doc table{border-collapse:collapse;width:100%;font-size:13.5px}.scenario-doc th,.scenario-doc td{border:1px solid ${theme.color.border};padding:6px 8px;vertical-align:top;text-align:left}.scenario-doc th{background:${P.soft}}.scenario-doc h2{font-size:17px;margin:22px 0 8px}`}</style>
         {mode === "preview" ? (
