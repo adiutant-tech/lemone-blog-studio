@@ -1071,9 +1071,10 @@ export function ScriptEditor({ id, shared, author, onBack }) {
       const html = keepPrompter ? raw : rebuildPrompter(raw, K.format);
       const updated = await api(`/scripts/${id}`, { html, by: author });
       setX(updated); setViewV(null); setDirty(false); showSaved(updated);
-      const vNo = updated.versions[updated.versions.length - 1].v;
+      const lastV = updated.versions[updated.versions.length - 1];
+      const vNo = `${lastV.v} (${fmt(lastV.at)}, ${lastV.by})`;
       if (updated.changed === false) {
-        setNotice({ type: "warning", text: `Nic nie zapisano: treść jest taka sama jak w wersji ${vNo}.` });
+        setNotice({ type: "warning", text: `Nic nie zapisano: treść jest taka sama jak w ostatniej wersji ${vNo}. Nowa wersja nie powstała.` });
       } else if (keepPrompter) {
         setNotice({ type: "info", text: `Zapisano jako wersję ${vNo}. Tekst do promptera zapisany z Twoimi poprawkami (tabela scenariusza bez zmian).` });
       } else if (prompterEdited && tableChanged) {
@@ -1139,6 +1140,9 @@ export function ScriptEditor({ id, shared, author, onBack }) {
             ? <><strong>Dokument zewnętrzny</strong> · {KINDS[x.kind] ? K.label : "rodzaj nieokreślony"} · dodał(a): {x.author} · {fmt(x.createdAt)}{x.externalSource ? ` · źródło: ${x.externalSource}` : ""}</>
             : <>{K.label} · {x.author} · {fmt(x.createdAt)} · model: {MODELS[x.model] || x.model || "-"} · prompt: {x.promptVersion ? `wersja ${x.promptVersion}` : "domyślny"} · koszt: {usdFmt(x.usd)} USD</>}
           {x.inputs?.lekarz ? ` · ${x.inputs.lekarz}` : x.inputs?.wystepuje ? ` · ${x.inputs.wystepuje}` : ""}
+        </p>
+        <p style={{ ...ui.help, margin: "4px 0 0", color: theme.color.text }}>
+          <strong>Ostatni zapis:</strong> {fmt(current.at)} · {current.by} · wersja {current.v} z {x.versions.length}
         </p>
       </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
