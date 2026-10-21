@@ -964,7 +964,8 @@ function ScriptList({ onOpen, session, onResume }) {
   };
   useEffect(() => { load(); }, []);
   const byKind = (items || []).filter(it => !filter || (it.kind || "lekarz-yt") === filter);
-  const reg = useRegistry(byKind, it => [kindOf(it.kind).label]);
+  const listLabel = (it) => KINDS[it.kind] ? kindOf(it.kind).label : "Scenariusz zewnętrzny";
+  const reg = useRegistry(byKind, it => [listLabel(it), it.external ? "dokument zewnętrzny" : ""]);
   // usuwa autor scenariusza albo admin (Worker sprawdza to samo); trafia do kosza
   const canDelete = (it) => session && (session.role === "admin" || session.email === it.author);
   const remove = async (id) => {
@@ -1003,7 +1004,7 @@ function ScriptList({ onOpen, session, onResume }) {
         <RegistryRow key={it.id} onOpen={() => onOpen(it.id)} onDelete={canDelete(it) ? () => remove(it.id) : null}
           deleteLabel={it.title || "scenariusz bez tematu"} right={`${usdFmt(it.usd)} USD`}>
           <div style={{ fontWeight: 600 }}>{it.title || "(bez tematu)"}</div>
-          <div style={{ ...ui.help, margin: "3px 0 0" }}>{kindOf(it.kind).label} · {it.author} · {fmt(it.createdAt)}{it.v > 1 ? ` · wersja ${it.v} (${fmt(it.updatedAt)})` : ""}</div>
+          <div style={{ ...ui.help, margin: "3px 0 0" }}>{it.external ? "Dokument zewnętrzny · " : ""}{listLabel(it)} · {it.author} · {fmt(it.createdAt)}{it.v > 1 ? ` · wersja ${it.v} (${fmt(it.updatedAt)})` : ""}</div>
         </RegistryRow>
       ))}
     </div>
@@ -1090,7 +1091,9 @@ export function ScriptEditor({ id, shared, author, onBack }) {
         <button onClick={onBack} style={{ ...ui.btnSecondary, padding: "4px 10px", marginBottom: 10 }}><ArrowLeft size={12} /> Lista</button>
         <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 4px", fontFamily: theme.font.heading }}>{x.title || "(bez tematu)"}</h2>
         <p style={{ ...ui.help, margin: 0 }}>
-          {K.label} · {x.author} · {fmt(x.createdAt)} · model: {MODELS[x.model] || x.model || "-"} · prompt: {x.promptVersion ? `wersja ${x.promptVersion}` : "domyślny"} · koszt: {usdFmt(x.usd)} USD
+          {x.external
+            ? <><strong>Dokument zewnętrzny</strong> · {KINDS[x.kind] ? K.label : "rodzaj nieokreślony"} · dodał(a): {x.author} · {fmt(x.createdAt)}{x.externalSource ? ` · źródło: ${x.externalSource}` : ""}</>
+            : <>{K.label} · {x.author} · {fmt(x.createdAt)} · model: {MODELS[x.model] || x.model || "-"} · prompt: {x.promptVersion ? `wersja ${x.promptVersion}` : "domyślny"} · koszt: {usdFmt(x.usd)} USD</>}
           {x.inputs?.lekarz ? ` · ${x.inputs.lekarz}` : x.inputs?.wystepuje ? ` · ${x.inputs.wystepuje}` : ""}
         </p>
       </div>
