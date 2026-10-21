@@ -10,10 +10,12 @@ import { Archive as ArchiveIcon, ArrowLeft, Loader2, AlertCircle, RefreshCw, Sav
 import theme, { ui } from "./theme.js";
 import { apiFetch } from "./auth.jsx";
 import { sanitizeHtml, CopyButton, useRegistry, RegistryToolbar, RegistryRow } from "./shared.jsx";
-import { ScriptEditor, kindOf } from "./scenario.jsx";
+import { ScriptEditor, kindOf, KINDS } from "./scenario.jsx";
+import { ExternalDocForm, EXTERNAL_KIND } from "./externalDoc.jsx";
+import { FilePlus2 } from "lucide-react";
 
 const API = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
-const TYP_LABEL = { edukacyjny: "Edukacyjny", lifestylowy: "Lifestylowy", ranking: "Ranking (szkic)", klinika: "Klinika", formatowanie: "Formatowanie" };
+const TYP_LABEL = { edukacyjny: "Edukacyjny", lifestylowy: "Lifestylowy", ranking: "Ranking (szkic)", klinika: "Klinika", formatowanie: "Formatowanie", [EXTERNAL_KIND]: "Artykuł zewnętrzny" };
 const fmt = (iso) => iso ? new Date(iso).toLocaleString("pl-PL", { dateStyle: "short", timeStyle: "short" }) : "";
 const usd = (n) => (Number(n) || 0).toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -30,7 +32,10 @@ const RODZAJ = { artykul: "Artykuł", scenariusz: "Scenariusz" };
 // Odmiana liczebników: 1 artykuł, 2-4 artykuły, 5+ artykułów (12-14 zawsze trzecia forma)
 const plural = (n, one, few, many) => n === 1 ? one : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) ? few : many;
 const ile = (n, forms) => `${n} ${plural(n, ...forms)}`;
-const typeLabel = (it) => it.rodzaj === "scenariusz" ? kindOf(it.kind).label : (TYP_LABEL[it.typ] || it.typ);
+const typeLabel = (it) => it.rodzaj === "scenariusz"
+  ? (KINDS[it.kind] ? KINDS[it.kind].label : "Scenariusz zewnętrzny")
+  : (TYP_LABEL[it.typ] || it.typ);
+const externalPill = <span style={ui.pill(theme.color.bg, theme.color.textSecondary)}>Dokument zewnętrzny</span>;
 
 export default function ArchiveModule({ shared, session }) {
   const [open, setOpen] = useState(null); // {rodzaj, id}
@@ -40,14 +45,15 @@ export default function ArchiveModule({ shared, session }) {
   }
   return open
     ? <ArticleDetail key={open.id} id={open.id} shared={shared} onBack={() => setOpen(null)} />
-    : <RegistryList onOpen={setOpen} filter={filter} setFilter={setFilter} />;
+    : <RegistryList onOpen={setOpen} filter={filter} setFilter={setFilter} shared={shared} author={session?.email || ""} />;
 }
 
-function RegistryList({ onOpen, filter, setFilter }) {
+function RegistryList({ onOpen, filter, setFilter, shared, author }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
-  const byKind = (items || []).filter(it => !filter || it.rodzaj === filter);
-  const reg = useRegistry(byKind, it => [typeLabel(it), RODZAJ[it.rodzaj], it.acceptedBy]);
+  const [adding, setAdding] = useState(false);
+  const byKind = (items || []).filter(it => !filter || (filter === "zewnetrzne" ? it.external : it.rodzaj === filter));
+  const reg = useRegistry(byKind, it => [typeLabel(it), RODZAJ[it.rodzaj], it.acceptedBy, it.external ? "zewnętrzny dokument zewnętrzny" : ""]);
 
   const load = async () => {
     setError(null);
@@ -69,7 +75,7 @@ function RegistryList({ onOpen, filter, setFilter }) {
 
   const shown = reg.shown;
   const total = shown.reduce((s, it) => s + (Number(it.usd) || 0), 0);
-  const count = (r) => (items || []).filter(it => it.rodzaj === r).length;
+  const count = (r) => (items || []).filter(it => (r === "zewnetrzne" ? it.external : it.rodzaj === r)).length;
 
   return (
     <div className="fade-in" style={ui.card}>
@@ -77,13 +83,19 @@ function RegistryList({ onOpen, filter, setFilter }) {
         <ArchiveIcon size={16} color={theme.color.accentHover} />
         <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: 0, fontFamily: theme.font.heading }}>Rejestr</h2>
         <div style={{ flex: 1 }} />
+        {!adding && <button onClick={() => setAdding(true)} style={ui.btnPrimary()}><FilePlus2 size={14} /> Dodaj dokument zewnętrzny</button>}
         <button onClick={load} style={ui.btnSecondary}><RefreshCw size={13} /> Odśwież</button>
       </div>
+      {adding && (
+        <ExternalDocForm shared={shared} author={author} onClose={() => setAdding(false)}
+          onSaved={(doc) => { setAdding(false); onOpen(doc); }} />
+      )}
       <RegistryToolbar reg={reg} placeholder="Szukaj: tytuł, autor, typ">
         <select value={filter} onChange={e => setFilter(e.target.value)} style={{ ...ui.input, width: "auto" }} aria-label="Rodzaj">
           <option value="">Artykuły i scenariusze</option>
           <option value="artykul">Tylko artykuły ({count("artykul")})</option>
           <option value="scenariusz">Tylko scenariusze ({count("scenariusz")})</option>
+          <option value="zewnetrzne">Tylko dokumenty zewnętrzne ({count("zewnetrzne")})</option>
         </select>
       </RegistryToolbar>
       {error && <div style={ui.banner("danger")}><AlertCircle size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} />{error}</div>}
@@ -99,11 +111,12 @@ function RegistryList({ onOpen, filter, setFilter }) {
           deleteLabel={it.title || (it.rodzaj === "scenariusz" ? "scenariusz bez tematu" : "artykuł bez tytułu")} right={`${usd(it.usd)} USD`}>
           <div style={{ fontWeight: 600, fontSize: theme.size.body, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <span style={ui.pill(it.rodzaj === "scenariusz" ? theme.color.warningSoft : theme.color.accentSoft, theme.color.text)}>{RODZAJ[it.rodzaj]}</span>
+            {it.external && externalPill}
             {it.title || "(bez tytułu)"}
           </div>
           <div style={{ ...ui.help, margin: "3px 0 0" }}>
             {typeLabel(it)} · {it.author} · {fmt(it.createdAt)}
-            {it.rodzaj === "artykul" ? (it.accepted ? ` · zaakceptował(a): ${it.acceptedBy}` : " · bez akceptacji") : ""}
+            {it.rodzaj === "artykul" && !it.external ? (it.accepted ? ` · zaakceptował(a): ${it.acceptedBy}` : " · bez akceptacji") : ""}
             {it.v > 1 ? ` · wersja ${it.v} (edytowany ${fmt(it.updatedAt)})` : ""}
           </div>
         </RegistryRow>
@@ -184,9 +197,10 @@ function ArticleDetail({ id, shared, onBack }) {
         <button onClick={onBack} style={{ ...ui.btnSecondary, padding: "4px 10px", marginBottom: 12 }}><ArrowLeft size={12} /> Rejestr</button>
         <h2 style={{ fontSize: theme.size.h2, fontWeight: 600, margin: "0 0 6px", fontFamily: theme.font.heading }}>{a.title || "(bez tytułu)"}</h2>
         <p style={{ ...ui.help, margin: 0 }}>
-          {TYP_LABEL[a.typ] || a.typ} · autor: {a.author} · {fmt(a.createdAt)} · model: {a.model || "-"} · koszt: {usd(a.usd)} USD
+          {TYP_LABEL[a.typ] || a.typ} · {a.external ? "dodał(a)" : "autor"}: {a.author} · {fmt(a.createdAt)}{a.external ? "" : ` · model: ${a.model || "-"} · koszt: ${usd(a.usd)} USD`}
           {a.keyword ? ` · fraza: ${a.keyword}` : ""}
         </p>
+        {a.external && <p style={{ ...ui.help, color: theme.color.text, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>{externalPill}{a.externalSource ? `źródło: ${a.externalSource}` : "źródło nie podane"}</p>}
         {a.accepted && (
           <p style={{ ...ui.help, color: theme.color.text }}>
             <strong>Zaakceptował(a):</strong> {a.accepted.by}, {fmt(a.accepted.at)} · checklista: {a.accepted.checks?.length || 0} pkt · piśmiennictwo: {a.accepted.sources?.length || 0}

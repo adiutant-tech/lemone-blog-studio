@@ -31,12 +31,37 @@ const EN = String.fromCharCode(0x2013); // półpauza, j.w.
 const DASH_RE = new RegExp(`[${EM}${EN}]`, "g");
 
 // Modele do wyboru (Worker ma tę samą białą listę). Formatowanie ma własne, bez zmian.
+// v4.21: Fable 5.1 domyślnie do pisania (najżywszy tekst; ok. 2,5x droższy od Opusa 5.5).
+// Wyszukiwanie w źródłach zawsze idzie na Opusie 5.5 (patrz callModel).
 export const MODELS = {
-  "claude-opus-5-5":   "Opus 5.5 (najwyższa jakość)",
+  "claude-fable-5-1":  "Fable 5.1 (najlepszy tekst, ok. 2,5x drożej)",
+  "claude-opus-5-5":   "Opus 5.5 (wysoka jakość)",
   "claude-sonnet-5-5": "Sonnet 5.5 (szybszy, tańszy)",
   "claude-sonnet-4-6": "Sonnet 4.6 (poprzedni)",
 };
-export const DEFAULT_MODEL = "claude-opus-5-5";
+export const DEFAULT_MODEL = "claude-fable-5-1";
+// v4.21: staranność (output_config.effort) etapów pisania; wybór w formularzu artykułu i scenariusza.
+// Temperatury te modele nie przyjmują; effort reguluje, ile model myśli i dopracowuje przed napisaniem.
+export const EFFORTS = {
+  low: "Staranność: niska (szybciej, taniej)",
+  medium: "Staranność: średnia (zalecana)",
+  high: "Staranność: wysoka (staranniej, drożej)",
+};
+export const DEFAULT_EFFORT = "medium";
+const FABLE = "claude-fable-5-1";
+const SEARCH_MODEL = "claude-opus-5-5"; // etapy z web search (weryfikacja, zaplecze źródeł)
+
+// Jednorazowo (v4.21): zapamiętany w przeglądarce wybór Opusa 5.5 przechodzi na Fable 5.1;
+// wybór Sonneta zostaje. Później każdy wybór w formularzu jest pamiętany jak dotąd.
+try {
+  if (!localStorage.getItem("lemone_model_fable_v1")) {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if ((k.startsWith("lemone_gen_model_") || k === "lemone_scen_model") && localStorage.getItem(k) === "claude-opus-5-5") localStorage.setItem(k, FABLE);
+    }
+    localStorage.setItem("lemone_model_fable_v1", "1");
+  }
+} catch (e) { /* brak dostępu do pamięci przeglądarki: zostaje domyślny model */ }
 const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search" };
 // Koszt źródeł zależy od liczby wyszukiwań (każde to ok. 10 wyników z treścią na wejściu modelu),
 // nie od długości listy źródeł; dlatego limit dotyczy wyszukiwań.
@@ -57,24 +82,23 @@ const LENGTHS = {
 // Typy artykułów. redlineDefault: lifestylowy domyślnie bez passu, bo redakcja anti-slop
 // spłaszcza lekki ton; można włączyć ręcznie.
 const TYPES = {
-  edukacyjny:  { label: "Edukacyjny",  redlineDefault: true,  sectionWords: "170-280" },
+  edukacyjny:  { label: "Edukacyjny",  redlineDefault: false, sectionWords: "170-280" },
   lifestylowy: { label: "Lifestylowy", redlineDefault: false, sectionWords: "150-250" },
-  ranking:     { label: "Ranking",     redlineDefault: true,  sectionWords: "120-220" },
-  klinika:     { label: "Strona kliniki", redlineDefault: true, sectionWords: "200-350" },
+  ranking:     { label: "Ranking",     redlineDefault: false, sectionWords: "120-220" },
+  klinika:     { label: "Strona kliniki", redlineDefault: false, sectionWords: "200-350" },
 };
 
 // === Warstwa 1 anti-slop: zawsze w promptach (specyfikacja 3D) ===
-const ANTI_SLOP = `ZASADY STYLU (bezwzględne):
-- ZAKAZ pustych otwarć: "w dzisiejszych czasach", "w dobie", "nie da się ukryć", "od zarania dziejów", "jak powszechnie wiadomo"
-- ZAKAZ waty: "warto pamiętać, że", "należy podkreślić", "co ciekawe", "warto zaznaczyć"
-- ZAKAZ otwierania sekcji pytaniem retorycznym jako schematu
-- Listy punktowane TYLKO gdy treść jest realnym wyliczeniem; maksymalnie jedna lista na sekcję
-- Każda teza poparta konkretem, przykładem lub mechanizmem działania; zero truizmów
-- Zdania zróżnicowanej długości, naturalny polski, bez kalk z angielskiego
-- NIGDY nie używaj myślnika "${EM}" ani półpauzy "${EN}"; wyłącznie zwykły dywiz "-"
-- Zakresy liczbowe bez spacji: "2-3 godziny", "20-30 minut"
-- Pisz neutralnie rodzajowo (nie "jesteś narażona/narażony"; tak: "Twoja skóra jest narażona", "jesteśmy narażeni")
-- Fakty fizyczne: ekrany urządzeń emitują światło niebieskie (HEV), NIE promieniowanie UV`;
+// v4.21: krótko i pozytywnie (Fable gorzej pisze przy długich listach zakazów); wykaz zwrotów do
+// wycięcia żyje w zasadach humanizacji. Twarde reguły projektu zostają.
+const ANTI_SLOP = `JAK PISAĆ:
+- Jak doświadczony autor, który zna temat i lubi o nim opowiadać: konkretnie, z przykładami i mechanizmami, zmiennym rytmem zdań, naturalną polszczyzną. Każde zdanie coś wnosi; bez rytualnych wstępów i waty.
+- Listy tylko tam, gdzie treść jest wyliczeniem.
+
+ZASADY STAŁE:
+- Nigdy myślnik "${EM}" ani półpauza "${EN}"; wyłącznie dywiz "-". Zakresy liczbowe bez spacji: "2-3 godziny".
+- Zwracanie się neutralne rodzajowo ("Twoja skóra", "jeśli używasz"; nie "jesteś zmęczona").
+- Ekrany emitują światło niebieskie (HEV), nie promieniowanie UV.`;
 
 const GUARD_SKLEP = `GRANICE MERYTORYCZNE (sklep kosmetyczny, prawo kosmetyczne):
 - Kosmetyk pielęgnuje, wspiera, redukuje widoczność; NIGDY nie leczy, nie usuwa chorób, nie ma działania terapeutycznego
@@ -101,11 +125,11 @@ const STYLE_BY_TYPE = {
 - Osadzaj pielęgnację w realnych sytuacjach: poranek przed pracą, podróż, zmiana pory roku, wieczorny rytuał, sport
 - Konkret praktyczny: kolejność kroków, czas, częstotliwość, na co zwrócić uwagę przy wyborze kategorii produktu
 - Zwracaj się do czytelnika neutralnie ("Twoja skóra", "Twój rytuał"), bez form rodzajowych
-- ZAKAZ egzaltacji i żargonu influencerskiego: "magiczny", "cudowny", "must-have", "absolutny hit", "game changer", "pokochasz"
+- Bez egzaltacji i żargonu influencerskiego
 - Możesz wymieniać kategorie produktów (np. "lekki krem z filtrem"), ale NIE konkretne marki, chyba że są w materiałach źródłowych`,
   ranking: `STYL ARTYKUŁU RANKINGOWEGO:
 - Ton porównawczy i obiektywny: każde wyróżnienie uzasadnione cechą produktu (formuła, składnik, tekstura, przeznaczenie)
-- ZAKAZ superlatyw bez pokrycia: "najlepszy na rynku", "numer jeden", "bezkonkurencyjny", "absolutny hit"
+- Bez superlatyw bez pokrycia
 - Kryteria wyboru jawne i sprawdzalne dla czytelnika
 - Kolejność produktów ustala redakcja; nie podważaj jej i nie wymyślaj własnej punktacji`,
 };
@@ -165,6 +189,7 @@ async function readMessageStream(res) {
 // === Koszt: cennik API (USD za 1M tokenów; zapis do cache 1,25x wejścia) ===
 // Szacunek z usage zwracanego przez API; web search 10 USD / 1000 wyszukiwań.
 const PRICES = {
+  "claude-fable-5-1":  { in: 10, out: 50, cacheRead: 0.25 },
   "claude-opus-5-5":   { in: 4, out: 20, cacheRead: 0.20 },
   "claude-sonnet-5-5": { in: 2, out: 10, cacheRead: 0.20 },
   "claude-sonnet-4-6": { in: 3, out: 15, cacheRead: 0.30 },
@@ -201,8 +226,20 @@ function toContent(content) {
 // Ucięta odpowiedź (stop_reason "max_tokens") to błąd, nie wynik: wcześniej redakcja
 // po cichu gubiła końcówkę artykułu.
 // Przy web search obsługujemy "pause_turn" (wznowienie) i zbieramy cytowane źródła.
-export async function callModel(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, effort, search = false, searchUses = 3, stage = "inne", track } = {}) {
+export async function callModel(content, opts = {}) {
+  try {
+    return await callModelOnce(content, opts);
+  } catch (e) {
+    // Myślenie liczy się do limitu tokenów: przy ucięciu jedno ponowienie z niską starannością
+    if (!/limicie tokenów/i.test(e.message) || opts.effort === "low" || opts._retried) throw e;
+    return callModelOnce(content, { ...opts, effort: "low", effortLow: false, _retried: true });
+  }
+}
+
+async function callModelOnce(content, { model = DEFAULT_MODEL, maxTokens = 6000, effortLow = false, effort, search = false, searchUses = 3, stage = "inne", track } = {}) {
   if (STAGE_MODEL[stage]) model = STAGE_MODEL[stage];
+  // Fable 5.1 pisze, ale wyszukiwanie zostaje na Opusie 5.5 (wersja narzędzia web search potwierdzona dla Opusa)
+  if (search && model === FABLE) model = SEARCH_MODEL;
   const messages = [{ role: "user", content: toContent(content) }];
   const texts = [];
   const sources = new Map();
@@ -368,8 +405,8 @@ function buildOutlinePrompt(f) {
     klinika: "ostatnia sekcja ma wnosić treść, np. algorytm postępowania albo informację, kiedy zgłosić się do lekarza",
   }[f.typ] || "ostatnia sekcja ma wnosić treść, np. praktyczne wnioski lub tabelę decyzyjną";
   const countRule = f.typ === "klinika"
-    ? `- Dokładnie ${n} sekcji H2; bez "Podsumowania" jako pustego rytuału; ${lastSection}`
-    : `- Dokładnie ${n} sekcji H2 (bez sekcji FAQ i bez "Podsumowania" jako pustego rytuału; ${lastSection})`;
+    ? `- Około ${n} sekcji H2 (o jedną więcej lub mniej, jeśli temat tego wymaga); bez "Podsumowania" jako pustego rytuału; ${lastSection}`
+    : `- Około ${n} sekcji H2 (o jedną więcej lub mniej, jeśli temat tego wymaga; bez sekcji FAQ i bez "Podsumowania" jako pustego rytuału; ${lastSection})`;
   const rankingReq = isRanking ? `
 PRODUKTY W RANKINGU (kolejność ustalona przez redakcję, NIE zmieniaj jej):
 ${productsBrief(f.products)}
@@ -446,8 +483,8 @@ TEZA SEKCJI: ${sec.thesis}${f.typ === "klinika" ? "\nRealizuj wyłącznie tezę 
   return { cached: sharedPrefix(f, outline), text: `${prevExcerpt ? "KONIEC POPRZEDNIEJ SEKCJI (dla ciągłości; NIE powtarzaj tych treści):\n..." + prevExcerpt + "\n\n" : ""}${header}${linkBlock}
 
 WYMAGANIA:
-- Czysty HTML: ${tags} <p>, <strong>, <ul><li>${links.length ? ", <a href> (tylko linki wskazane wyżej)" : ""} (lista tylko jeśli konieczna)
-- ${isIntro ? "80-130" : TYPES[f.typ].sectionWords} słów
+- Czysty HTML: ${tags} <p>, <strong>, <ul><li>${links.length ? ", <a href> (tylko linki wskazane wyżej)" : ""}
+- Długość orientacyjnie ${isIntro ? "80-130" : TYPES[f.typ].sectionWords} słów; dopasuj ją do treści, ważniejsza jest jakość niż licznik
 - Fraza główna w tej sekcji maksymalnie ${isIntro ? "1 raz" : "1 raz, a jeśli jest w H2, to w treści wcale"}
 - ${links.length ? "Poza wskazanymi linkami bez odnośników" : "Bez odnośników"}, bez obrazków, bez FAQ, bez podsumowywania całości
 
@@ -691,6 +728,8 @@ export default function Generator({ shared, onSendToFormat }) {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [webSearch, setWebSearch] = useState(true);
   const [searchDepth, setSearchDepth] = useState("standard");
+  const [effort, setEffort] = useState(() => { const e = lsGet("lemone_gen_effort", DEFAULT_EFFORT); return EFFORTS[e] ? e : DEFAULT_EFFORT; });
+  const saveEffort = (v) => { setEffort(v); lsSet("lemone_gen_effort", v); };
 
   // Klinika: dziedzina (każda ma własny prompt matka)
   const [dziedzina, setDziedzina] = useState("trychologia");
@@ -855,7 +894,7 @@ export default function Generator({ shared, onSendToFormat }) {
       if (isKlinika && webSearch && !research) r = await runResearch();
       setPhase("outlineLoading");
       const f = formData({ research: r, ownPages: own });
-      const txt = await callModel(buildOutlinePrompt(f), opts({ maxTokens: 6000, effortLow: true, stage: "konspekt" }));
+      const txt = await callModel(buildOutlinePrompt(f), opts({ maxTokens: 12000, effort, stage: "konspekt" }));
       const j = parseJsonLoose(txt);
       if (!j.h1?.length || !j.sections?.length) throw new Error("Konspekt niekompletny");
       let sections = j.sections;
@@ -890,13 +929,13 @@ export default function Generator({ shared, onSendToFormat }) {
     const prevExcerpt = prevHtml ? stripTags(prevHtml).slice(-300) : "";
     const withNote = (p) => ({ ...p, text: p.text + regenNote(regen, prevContent) });
     if (unit.kind === "product") {
-      const prose = stripFences(await callModel(withNote(buildProductPrompt(f, outline, unit)), opts({ maxTokens: 3000, stage: "sekcje" })));
+      const prose = stripFences(await callModel(withNote(buildProductPrompt(f, outline, unit)), opts({ maxTokens: 8000, effort, stage: "sekcje" })));
       return `<div class="product">${buildProductHead(unit.product)}\n${prose}\n</div>`;
     }
     const prompt = unit.kind === "rankingIntro"
       ? buildRankingIntroPrompt(f, outline, unit, prevExcerpt)
       : buildSectionPrompt(f, outline, unit, prevExcerpt);
-    return stripFences(await callModel(withNote(prompt), opts({ maxTokens: 6000, stage: "sekcje" })));
+    return stripFences(await callModel(withNote(prompt), opts({ maxTokens: 16000, effort, stage: "sekcje" })));
   };
 
   // === Pisanie etapami (v4.17) ===
@@ -916,7 +955,7 @@ export default function Generator({ shared, onSendToFormat }) {
       kind: typ, title: (extra.outline || outline)?.chosenH1 || topic.slice(0, 140) || "(bez tematu)", stage: label,
       data: {
         cel, typSklep, dziedzina, promptMatka, keyword, keywordsAux, topic, materials, ownPagesText, ownPages, productsText,
-        length, redline, model, webSearch, searchDepth, research, outline, autoWrite,
+        length, redline, model, effort, webSearch, searchDepth, research, outline, autoWrite,
         secStages: st, result: extra.result !== undefined ? extra.result : result, usd: usdRef.current, ...extra.data,
         ...(extra.outline ? { outline: extra.outline } : {}),
       },
@@ -1000,6 +1039,7 @@ export default function Generator({ shared, onSendToFormat }) {
     setMaterials(x.materials || ""); setOwnPagesText(x.ownPagesText || ""); setOwnPages(x.ownPages || []); setProductsText(x.productsText || "");
     setLength(x.length || "standard"); setWebSearch(x.webSearch !== false); setSearchDepth(x.searchDepth || "standard");
     setResearch(x.research || null); setOutline(x.outline || null); setAutoWrite(!!x.autoWrite);
+    if (EFFORTS[x.effort]) setEffort(x.effort);
     // efekty zależne od celu i typu (prompt matka, model, redakcja) nadpisują pola po zmianie celu; ustawiamy je po nich
     setTimeout(() => { setPromptMatka(x.promptMatka || ""); setModel(x.model || DEFAULT_MODEL); setRedline(x.redline !== undefined ? x.redline : true); }, 80);
     usdRef.current = Number(x.usd) || 0;
@@ -1229,6 +1269,10 @@ export default function Generator({ shared, onSendToFormat }) {
           <select value={model} onChange={e => saveModel(e.target.value)} style={ui.input} disabled={formLocked}>
             {Object.entries(MODELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
+          <select value={effort} onChange={e => saveEffort(e.target.value)} style={{ ...ui.input, marginTop: 6 }} disabled={secBusy != null}
+            title="Ile model myśli i dopracowuje przed napisaniem konspektu i sekcji; można zmienić między sekcjami">
+            {Object.entries(EFFORTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
         </div>
 
         <div style={S.field}>
@@ -1353,7 +1397,7 @@ export default function Generator({ shared, onSendToFormat }) {
             <div style={{ ...S.field, display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 2 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: theme.size.small + 0.5, cursor: "pointer", padding: "4px 0" }}>
                 <input type="checkbox" checked={redline} onChange={e => setRedline(e.target.checked)} disabled={formLocked} />
-                Pass redakcyjny anti-slop (2. przebieg)
+                Automatyczna redakcja po napisaniu (zwykle niepotrzebna; zamiast niej przycisk Humanizacja)
               </label>
               {isKlinika && (
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: theme.size.small + 0.5, cursor: "pointer", padding: "4px 0" }}>
